@@ -120,6 +120,12 @@ async function main() {
     check('Scheduler sends feedback template', !!template && template.summary.includes('restaurant_ranking'),
       template && `to=${template.to}`);
     check('Template sent to OCR-extracted customer phone', template?.to === '972521234567', `to=${template?.to}`);
+    // Lock the template param order: header = customer name, body = manager name
+    const comps = template?.raw?.template?.components ?? [];
+    const headerParam = comps.find((c) => c.type === 'header')?.parameters?.[0]?.text;
+    const bodyParam = comps.find((c) => c.type === 'body')?.parameters?.[0]?.text;
+    check('Template header param = customer name', headerParam === 'דנה לוי', `header=${headerParam}`);
+    check('Template body param = manager name', bodyParam === 'מנהל בדיקה', `body=${bodyParam}`);
 
     // ── Scenario B: positive button reply (routed by context wamid) ──
     await customerButton('972521234567', 'מעולה! 😊', template.wamid);

@@ -27,9 +27,11 @@ export async function sendTextMessage(to: string, text: string): Promise<string 
 
 /**
  * Sends the feedback template (business-initiated, works outside the 24h window).
- * Param layout matches the approved template: header {{1}} = manager name,
- * body {{1}} = customer name. Returns the wamid so button replies can be
- * routed back to the exact feedback row via context.id.
+ * Verified param layout of the approved `restaurant_ranking` template:
+ *   header {{1}} = CUSTOMER name  → greeting "<customer> היקר/ה"
+ *   body   {{1}} = MANAGER name   → "מדבר <manager> מצוות שירות הלקוחות…"
+ * Returns the wamid so button replies can be routed back to the exact
+ * feedback row via context.id.
  */
 export async function sendFeedbackTemplate(
   to: string,
@@ -49,11 +51,11 @@ export async function sendFeedbackTemplate(
         components: [
           {
             type: 'header',
-            parameters: [{ type: 'text', text: managerName }],
+            parameters: [{ type: 'text', text: customerName }],
           },
           {
             type: 'body',
-            parameters: [{ type: 'text', text: customerName }],
+            parameters: [{ type: 'text', text: managerName }],
           },
         ],
       },
