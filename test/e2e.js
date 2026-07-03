@@ -148,6 +148,11 @@ async function main() {
 
     // ── Scenario D: manager complaint flow (via interactive re-prompt ids) ──
     await customerInteractive('972521234567', 'FEEDBACK_MANAGER', 'אשמח לדבר עם מנהל', templateC.wamid);
+    // Manager must be notified IMMEDIATELY on the button press, before any reason
+    const managerImmediate = await waitFor(async () =>
+      mock.sent.find((m) => m.to === '972500000002' && m.summary.includes('ביקש לפנות למנהל')));
+    check('Manager button → manager notified immediately (no reason yet)', !!managerImmediate,
+      managerImmediate && `includes customer name: ${managerImmediate.summary.includes('יוסי כהן')}`);
     const askReason = await waitFor(async () =>
       mock.sent.find((m) => m.to === '972521234567' && m.summary.includes('מה קרה')));
     check('Manager button → bot asks what happened', !!askReason);
@@ -155,7 +160,7 @@ async function main() {
     await customerText('972521234567', 'האוכל הגיע קר מאוד');
     const managerAlert = await waitFor(async () =>
       mock.sent.find((m) => m.to === '972500000002' && m.summary.includes('האוכל הגיע קר מאוד')));
-    check('Complaint forwarded to org manager phone', !!managerAlert,
+    check('Complaint detail forwarded to org manager phone', !!managerAlert,
       managerAlert && `includes org name: ${managerAlert.summary.includes('מסעדת בדיקה')}`);
     const thanks = await waitFor(async () =>
       mock.sent.find((m) => m.to === '972521234567' && m.summary.includes('יצור איתך קשר')));

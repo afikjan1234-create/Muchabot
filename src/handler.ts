@@ -131,9 +131,16 @@ export async function handleCustomerMessage(
   if (feedback.conversationState === 'waiting_feedback') {
     // Order matters: "לא טוב" contains "טוב", so check the manager path first
     if (MANAGER_PATTERNS.test(payload)) {
+      const customerName = feedback.customerName || `+${customerPhone}`;
+      // Notify the manager immediately — the customer asked to be contacted.
+      // This must not depend on them typing a reason (many press and stop).
+      await sendTextMessage(
+        org.managerPhone,
+        `📞 [${org.name}] הלקוח ${customerName} (+${customerPhone}) ביקש לפנות למנהל.\nאנא צור/צרי איתו קשר. (אם יפרט מה קרה, אשלח לך את הפירוט בהודעה נפרדת.)`
+      );
       await sendTextMessage(
         customerPhone,
-        'מצטערים לשמוע 😔 נשמח אם תספר לנו מה קרה כדי שנוכל להשתפר:'
+        'מצטערים לשמוע 😔 מנהל המסעדה יצור איתך קשר בקרוב.\nבינתיים, נשמח אם תספר לנו מה קרה כדי שנוכל להשתפר:'
       );
       await updateFeedback(feedback.id, { conversationState: 'waiting_reason', result: 'manager' });
     } else if (POSITIVE_PATTERNS.test(payload)) {
@@ -159,13 +166,15 @@ export async function handleCustomerMessage(
 
   if (feedback.conversationState === 'waiting_reason') {
     const customerName = feedback.customerName || `+${customerPhone}`;
+    // Follow-up: the manager was already notified on the button press; now
+    // forward the details the customer chose to add.
     await sendTextMessage(
       org.managerPhone,
-      `⚠️ [${org.name}] פנייה מלקוח ${customerName} (+${customerPhone}):\n\n"${payload}"\n\nנדרש טיפול אנושי — צור קשר עם הלקוח.`
+      `⚠️ [${org.name}] פירוט מהלקוח ${customerName} (+${customerPhone}):\n\n"${payload}"\n\nנדרש טיפול אנושי — צור קשר עם הלקוח.`
     );
     await sendTextMessage(
       customerPhone,
-      `תודה על הפידבק 🙏 מנהל ${org.name} יצור איתך קשר בקרוב לטיפול בנושא.`
+      `תודה על הפירוט 🙏 מנהל ${org.name} יצור איתך קשר בקרוב לטיפול בנושא.`
     );
     await updateFeedback(feedback.id, {
       status: 'completed',
