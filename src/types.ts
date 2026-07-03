@@ -1,3 +1,5 @@
+export type OrgPlan = 'shared' | 'dedicated';
+
 export interface Org {
   id: string;
   name: string;
@@ -9,6 +11,17 @@ export interface Org {
   isActive: boolean;
   createdAt: string;
   phones?: OrgPhone[];
+  /** 'shared' = platform's default WhatsApp number; 'dedicated' = this org's own number. */
+  plan: OrgPlan;
+  /** Meta phone_number_id for this org's dedicated number. Null when plan is 'shared'. */
+  whatsappPhoneNumberId: string | null;
+  /** Only needed if the dedicated number lives under a different Meta Business Manager. */
+  whatsappToken: string | null;
+}
+
+export interface WhatsAppCredentials {
+  token: string;
+  phoneNumberId: string;
 }
 
 export interface OrgPhone {

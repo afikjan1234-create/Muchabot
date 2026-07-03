@@ -228,6 +228,41 @@ async function main() {
       mock.sent.find((m) => m.to === '972500000002' && m.summary.includes('בדיקת תלונה מטלפון הבעלים')));
     check('Owner complaint text routed to customer flow (not owner flow)', !!managerAlertH);
 
+    // ── Scenario I: dedicated-plan org sends via its OWN phone_number_id ──
+    mock.sent.length = 0;
+    const dedicatedOrg = await api('post', '/orgs', {
+      name: 'מסעדה פרימיום',
+      managerName: 'מנהל פרימיום',
+      managerPhone: '0500000003',
+      woltRatingUrl: 'https://wolt.com/he/premium',
+      feedbackDelayMinutes: 0,
+      plan: 'dedicated',
+      whatsappPhoneNumberId: 'DEDICATED_PHONE_999',
+      phones: [{ phone: '0500000005', label: 'בעלים' }],
+    });
+    check('Dedicated org created with own phone_number_id', dedicatedOrg.plan === 'dedicated' && dedicatedOrg.whatsappPhoneNumberId === 'DEDICATED_PHONE_999');
+
+    const dedicatedCreateFailure = await axios
+      .post(`${BOT}/api/orgs`, {
+        name: 'ללא מספר', managerPhone: '0500000004', plan: 'dedicated',
+      }, { headers: { 'x-admin-key': ADMIN_KEY }, validateStatus: () => true });
+    check('Dedicated org without phone_number_id is rejected', dedicatedCreateFailure.status !== 200,
+      `status=${dedicatedCreateFailure.status}`);
+
+    await api('post', '/feedbacks', {
+      orgId: dedicatedOrg.id, customerPhone: '0500000093', customerName: 'לקוח פרימיום', delayMinutes: 0,
+    });
+    const dedicatedTemplate = await waitFor(async () =>
+      mock.sent.find((m) => m.type === 'template' && m.to === '972500000093'), 20000);
+    check('Dedicated org template sent via its own phone_number_id (not the shared default)',
+      dedicatedTemplate?.phoneId === 'DEDICATED_PHONE_999', `phoneId=${dedicatedTemplate?.phoneId}`);
+
+    // Shared-plan org (the original test org) must still use the default/shared phoneId
+    check('Shared-plan org template used the shared/default phone_number_id',
+      templateE?.phoneId && templateE.phoneId !== 'DEDICATED_PHONE_999', `phoneId=${templateE?.phoneId}`);
+
+    await api('delete', `/orgs/${dedicatedOrg.id}`);
+
     // ── Stats ──
     const stats = await api('get', '/stats');
     const testOrg = stats.find((s) => s.orgId === org.id);

@@ -18,8 +18,8 @@ function start(port) {
     else if (b.type === 'template') summary = `template:${b.template?.name} params:${JSON.stringify(b.template?.components)}`;
     else if (b.type === 'interactive') summary = `buttons:${JSON.stringify(b.interactive?.action?.buttons?.map((x) => x.reply))} body:${b.interactive?.body?.text}`;
     const wamid = `wamid.MOCK${++wamidCounter}`;
-    sent.push({ to: b.to, type: b.type, summary, wamid, raw: b });
-    console.log(`[mock] → ${b.to} [${b.type}] ${summary.slice(0, 90)}`);
+    sent.push({ to: b.to, type: b.type, summary, wamid, raw: b, phoneId: req.params.phoneId });
+    console.log(`[mock] (phone ${req.params.phoneId}) → ${b.to} [${b.type}] ${summary.slice(0, 90)}`);
     res.json({ messaging_product: 'whatsapp', messages: [{ id: wamid }] });
   });
 

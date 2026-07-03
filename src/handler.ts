@@ -4,7 +4,7 @@ import {
   getFeedbackByWamid,
   updateFeedback,
 } from './db';
-import { sendTextMessage, sendReplyButtons, downloadMedia } from './whatsapp';
+import { sendTextMessage, sendReplyButtons, downloadMedia, credentialsFor } from './whatsapp';
 import { extractCustomerFromImage, looksLikePhone } from './ocr';
 import { Org } from './types';
 
@@ -54,7 +54,7 @@ export async function handleOwnerImage(
   mediaId: string,
   caption: string | null
 ): Promise<string> {
-  const { buffer, mimeType } = await downloadMedia(mediaId);
+  const { buffer, mimeType } = await downloadMedia(credentialsFor(org), mediaId);
   const extracted = await extractCustomerFromImage(buffer, mimeType);
 
   if (!extracted.phone) {
@@ -127,6 +127,7 @@ export async function handleCustomerMessage(
     return;
   }
   const org = feedback.org;
+  const creds = credentialsFor(org);
 
   if (feedback.conversationState === 'waiting_feedback') {
     // Order matters: "לא טוב" contains "טוב", so check the manager path first
@@ -135,16 +136,19 @@ export async function handleCustomerMessage(
       // Notify the manager immediately — the customer asked to be contacted.
       // This must not depend on them typing a reason (many press and stop).
       await sendTextMessage(
+        creds,
         org.managerPhone,
         `📞 [${org.name}] הלקוח ${customerName} (+${customerPhone}) ביקש לפנות למנהל.\nאנא צור/צרי איתו קשר. (אם יפרט מה קרה, אשלח לך את הפירוט בהודעה נפרדת.)`
       );
       await sendTextMessage(
+        creds,
         customerPhone,
         'מצטערים לשמוע 😔 מנהל המסעדה יצור איתך קשר בקרוב.\nבינתיים, נשמח אם תספר לנו מה קרה כדי שנוכל להשתפר:'
       );
       await updateFeedback(feedback.id, { conversationState: 'waiting_reason', result: 'manager' });
     } else if (POSITIVE_PATTERNS.test(payload)) {
       await sendTextMessage(
+        creds,
         customerPhone,
         `תודה רבה! 🙏 שמחים שנהנית מ${org.name}!\n\nנשמח אם תדרג אותנו בוולט ⭐⭐⭐⭐⭐:\n${org.woltRatingUrl}`
       );
@@ -156,7 +160,7 @@ export async function handleCustomerMessage(
     } else {
       // Free text that isn't clearly positive/negative — re-prompt with buttons
       // (allowed: the customer's message opened a 24h session window)
-      await sendReplyButtons(customerPhone, `איך הייתה החוויה שלך מ${org.name}?`, [
+      await sendReplyButtons(creds, customerPhone, `איך הייתה החוויה שלך מ${org.name}?`, [
         { id: 'FEEDBACK_POSITIVE', title: 'הייתה מעולה! 😊' },
         { id: 'FEEDBACK_MANAGER', title: 'אשמח לדבר עם מנהל' },
       ]);
@@ -169,10 +173,12 @@ export async function handleCustomerMessage(
     // Follow-up: the manager was already notified on the button press; now
     // forward the details the customer chose to add.
     await sendTextMessage(
+      creds,
       org.managerPhone,
       `⚠️ [${org.name}] פירוט מהלקוח ${customerName} (+${customerPhone}):\n\n"${payload}"\n\nנדרש טיפול אנושי — צור קשר עם הלקוח.`
     );
     await sendTextMessage(
+      creds,
       customerPhone,
       `תודה על הפירוט 🙏 מנהל ${org.name} יצור איתך קשר בקרוב לטיפול בנושא.`
     );

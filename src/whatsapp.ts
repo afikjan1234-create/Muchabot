@@ -1,26 +1,49 @@
 import axios from 'axios';
 import { config } from './config';
+import { Org, WhatsAppCredentials } from './types';
 
-const messagesUrl = () => `${config.graphApiBaseUrl}/${config.whatsappPhoneNumberId}/messages`;
-
-function authHeaders() {
+/**
+ * Resolves which WhatsApp number/token to send on behalf of an org:
+ * orgs with their own phone_number_id use it (plus their own token, only if
+ * one is set — needed when that number lives under a separate Meta Business
+ * Manager). A custom token is only ever applied together with a custom
+ * phoneNumberId; a leftover token from a former dedicated setup must not
+ * silently pair with the shared platform number after downgrading.
+ */
+export function credentialsFor(org: Org): WhatsAppCredentials {
+  if (!org.whatsappPhoneNumberId) {
+    return { token: config.whatsappToken, phoneNumberId: config.whatsappPhoneNumberId };
+  }
   return {
-    Authorization: `Bearer ${config.whatsappToken}`,
+    token: org.whatsappToken || config.whatsappToken,
+    phoneNumberId: org.whatsappPhoneNumberId,
+  };
+}
+
+const messagesUrl = (phoneNumberId: string) => `${config.graphApiBaseUrl}/${phoneNumberId}/messages`;
+
+function authHeaders(token: string) {
+  return {
+    Authorization: `Bearer ${token}`,
     'Content-Type': 'application/json',
   };
 }
 
 /** Sends a plain text message. Returns the wamid of the sent message. */
-export async function sendTextMessage(to: string, text: string): Promise<string | null> {
+export async function sendTextMessage(
+  creds: WhatsAppCredentials,
+  to: string,
+  text: string
+): Promise<string | null> {
   const { data } = await axios.post(
-    messagesUrl(),
+    messagesUrl(creds.phoneNumberId),
     {
       messaging_product: 'whatsapp',
       to,
       type: 'text',
       text: { body: text, preview_url: false },
     },
-    { headers: authHeaders() }
+    { headers: authHeaders(creds.token) }
   );
   return data?.messages?.[0]?.id ?? null;
 }
@@ -34,13 +57,14 @@ export async function sendTextMessage(to: string, text: string): Promise<string 
  * feedback row via context.id.
  */
 export async function sendFeedbackTemplate(
+  creds: WhatsAppCredentials,
   to: string,
   templateName: string,
   managerName: string,
   customerName: string
 ): Promise<string | null> {
   const { data } = await axios.post(
-    messagesUrl(),
+    messagesUrl(creds.phoneNumberId),
     {
       messaging_product: 'whatsapp',
       to,
@@ -60,7 +84,7 @@ export async function sendFeedbackTemplate(
         ],
       },
     },
-    { headers: authHeaders() }
+    { headers: authHeaders(creds.token) }
   );
   return data?.messages?.[0]?.id ?? null;
 }
@@ -71,12 +95,13 @@ export async function sendFeedbackTemplate(
  * answered with free text instead of pressing a button.
  */
 export async function sendReplyButtons(
+  creds: WhatsAppCredentials,
   to: string,
   bodyText: string,
   buttons: { id: string; title: string }[]
 ): Promise<string | null> {
   const { data } = await axios.post(
-    messagesUrl(),
+    messagesUrl(creds.phoneNumberId),
     {
       messaging_product: 'whatsapp',
       to,
@@ -92,18 +117,21 @@ export async function sendReplyButtons(
         },
       },
     },
-    { headers: authHeaders() }
+    { headers: authHeaders(creds.token) }
   );
   return data?.messages?.[0]?.id ?? null;
 }
 
-export async function downloadMedia(mediaId: string): Promise<{ buffer: Buffer; mimeType: string }> {
+export async function downloadMedia(
+  creds: WhatsAppCredentials,
+  mediaId: string
+): Promise<{ buffer: Buffer; mimeType: string }> {
   const { data: meta } = await axios.get(`${config.graphApiBaseUrl}/${mediaId}`, {
-    headers: authHeaders(),
+    headers: authHeaders(creds.token),
   });
 
   const response = await axios.get<ArrayBuffer>(meta.url, {
-    headers: { Authorization: `Bearer ${config.whatsappToken}` },
+    headers: { Authorization: `Bearer ${creds.token}` },
     responseType: 'arraybuffer',
   });
 

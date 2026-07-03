@@ -44,6 +44,8 @@
   .b-manager { background: #fee2e2; color: #b91c1c; }
   .b-active { background: #dcfce7; color: #15803d; }
   .b-inactive { background: #e5e7eb; color: #4b5563; }
+  .b-shared { background: #e0e7ff; color: #3730a3; }
+  .b-dedicated { background: #fef9c3; color: #854d0e; }
 
   button { font-family: inherit; font-size: 14px; border: none; border-radius: 8px; padding: 8px 16px; cursor: pointer; transition: opacity .15s; }
   button:hover { opacity: .88; }
@@ -100,7 +102,7 @@
     <h2>מסעדות <button class="btn-primary btn-sm" onclick="openOrgModal()">+ הוספת מסעדה</button></h2>
     <div style="overflow-x:auto"><table id="orgsTable">
       <thead><tr>
-        <th>שם</th><th>מנהל</th><th>טלפון מנהל</th><th>טלפונים מורשים</th><th>השהיה (דק')</th><th>תבנית</th><th>סטטוס</th><th></th>
+        <th>שם</th><th>מנהל</th><th>טלפון מנהל</th><th>טלפונים מורשים</th><th>השהיה (דק')</th><th>תבנית</th><th>חיבור וואטסאפ</th><th>סטטוס</th><th></th>
       </tr></thead>
       <tbody></tbody>
     </table></div>
@@ -149,6 +151,19 @@
       <label>טלפונים מורשים לשליחת לקוחות (בעלים/צוות)</label>
       <div id="phonesList"></div>
       <button class="btn-ghost btn-sm" onclick="addPhoneRow()">+ הוספת טלפון</button>
+    </div>
+    <hr style="border:none;border-top:1px solid var(--border);margin:16px 0">
+    <div class="field">
+      <label>חיבור וואטסאפ</label>
+      <select id="orgPlan" onchange="onPlanChange()">
+        <option value="shared">משותף — משתמש במספר של הפלטפורמה (זול)</option>
+        <option value="dedicated">ייעודי — מספר וואטסאפ נפרד למסעדה (פרימיום)</option>
+      </select>
+    </div>
+    <div id="dedicatedFields" class="hidden">
+      <div class="field"><label>Phone Number ID (מ-Meta) *</label><input id="orgPhoneNumberId" placeholder="1153127421213229" style="direction:ltr;text-align:right"></div>
+      <div class="field"><label>טוקן גישה (רק אם המספר לא רשום תחת המערכת שלי — השאר ריק אחרת)</label><input id="orgWaToken" type="password" placeholder="●●●●●● (השאר ריק כדי לא לשנות)" style="direction:ltr;text-align:right"></div>
+      <p class="muted">מספר ייעודי דורש רישום מראש ב-WhatsApp Manager תחת חשבון העסק שלך.</p>
     </div>
     <div class="field" id="activeField" style="display:none">
       <label>סטטוס</label>
@@ -241,7 +256,7 @@ async function loadStats() {
 async function loadOrgs() {
   orgs = await api('/orgs');
   const tbody = $('orgsTable').querySelector('tbody');
-  if (!orgs.length) { tbody.innerHTML = '<tr><td colspan="8" class="empty">אין מסעדות עדיין — הוסף את הראשונה!</td></tr>'; }
+  if (!orgs.length) { tbody.innerHTML = '<tr><td colspan="9" class="empty">אין מסעדות עדיין — הוסף את הראשונה!</td></tr>'; }
   else {
     tbody.innerHTML = orgs.map(o => `
       <tr>
@@ -251,6 +266,7 @@ async function loadOrgs() {
         <td dir="ltr">${(o.phones || []).map(p => '+' + esc(p.phone)).join('<br>') || '—'}</td>
         <td>${o.feedbackDelayMinutes}</td>
         <td dir="ltr">${esc(o.templateName)}</td>
+        <td><span class="badge ${o.plan === 'dedicated' ? 'b-dedicated' : 'b-shared'}">${o.plan === 'dedicated' ? 'ייעודי' : 'משותף'}</span></td>
         <td><span class="badge ${o.isActive ? 'b-active' : 'b-inactive'}">${o.isActive ? 'פעילה' : 'מושבתת'}</span></td>
         <td><button class="btn-ghost btn-sm" onclick="openOrgModal('${o.id}')">עריכה</button></td>
       </tr>`).join('');
@@ -272,6 +288,10 @@ function addPhoneRow(phone = '', label = '') {
   $('phonesList').appendChild(div);
 }
 
+function onPlanChange() {
+  $('dedicatedFields').classList.toggle('hidden', $('orgPlan').value !== 'dedicated');
+}
+
 function openOrgModal(id) {
   const org = orgs.find(o => o.id === id);
   $('orgModalTitle').textContent = org ? 'עריכת מסעדה' : 'הוספת מסעדה';
@@ -285,6 +305,10 @@ function openOrgModal(id) {
   $('orgActive').value = String(org?.isActive ?? true);
   $('activeField').style.display = org ? 'block' : 'none';
   $('orgDeleteBtn').classList.toggle('hidden', !org);
+  $('orgPlan').value = org?.plan || 'shared';
+  $('orgPhoneNumberId').value = org?.whatsappPhoneNumberId || '';
+  $('orgWaToken').value = '';
+  onPlanChange();
   $('phonesList').innerHTML = '';
   (org?.phones?.length ? org.phones : [{ phone: '', label: '' }]).forEach(p => addPhoneRow(p.phone ? '+' + p.phone : '', p.label));
   orgModal.showModal();
@@ -295,6 +319,10 @@ async function saveOrg() {
   const phones = [...$('phonesList').querySelectorAll('.phone-row')]
     .map(r => ({ phone: r.children[0].value.trim(), label: r.children[1].value.trim() }))
     .filter(p => p.phone);
+  const plan = $('orgPlan').value;
+  if (plan === 'dedicated' && !$('orgPhoneNumberId').value.trim()) {
+    return toast('חיבור ייעודי דורש Phone Number ID', true);
+  }
   const body = {
     name: $('orgName').value.trim(),
     managerName: $('orgManagerName').value.trim(),
@@ -304,7 +332,15 @@ async function saveOrg() {
     templateName: $('orgTemplate').value.trim() || 'restaurant_ranking',
     isActive: $('orgActive').value === 'true',
     phones,
+    plan,
+    whatsappPhoneNumberId: plan === 'dedicated' ? $('orgPhoneNumberId').value.trim() : '',
   };
+  // Only send the token if the admin actually typed a new one — an empty
+  // field means "leave the stored token as-is", not "clear it". Exception:
+  // downgrading to 'shared' always clears any leftover dedicated token.
+  const tokenInput = $('orgWaToken').value.trim();
+  if (tokenInput) body.whatsappToken = tokenInput;
+  else if (plan === 'shared') body.whatsappToken = '';
   try {
     await api(id ? `/orgs/${id}` : '/orgs', { method: id ? 'PUT' : 'POST', body: JSON.stringify(body) });
     orgModal.close();

@@ -5,7 +5,7 @@ import { config } from './config';
 import { startScheduler } from './scheduler';
 import { handleOwnerImage, handleOwnerText, handleCustomerMessage } from './handler';
 import { getActiveFeedbackByPhone, getOrgByOwnerPhone } from './db';
-import { sendTextMessage } from './whatsapp';
+import { sendTextMessage, credentialsFor } from './whatsapp';
 import { adminRouter } from './admin';
 
 const app = express();
@@ -46,9 +46,10 @@ async function processMessage(message: any): Promise<void> {
   // Restaurant owner/staff? (their phone is registered to an org)
   const org = isTemplateReply ? null : await getOrgByOwnerPhone(from);
   if (org) {
+    const creds = credentialsFor(org);
     if (message.type === 'image') {
       const reply = await handleOwnerImage(org, from, message.image.id, message.image?.caption ?? null);
-      await sendTextMessage(from, reply);
+      await sendTextMessage(creds, from, reply);
     } else if (message.type === 'text') {
       // If the bot just asked THIS phone "what happened?" as a customer
       // (an owner testing the flow on their own number), the next text is
@@ -59,9 +60,9 @@ async function processMessage(message: any): Promise<void> {
         return;
       }
       const reply = await handleOwnerText(org, from, message.text.body);
-      await sendTextMessage(from, reply);
+      await sendTextMessage(creds, from, reply);
     } else {
-      await sendTextMessage(from, 'שלח תמונה של פרטי ההזמנה או מספר טלפון כטקסט 🙂');
+      await sendTextMessage(creds, from, 'שלח תמונה של פרטי ההזמנה או מספר טלפון כטקסט 🙂');
     }
     return;
   }

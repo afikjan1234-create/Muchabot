@@ -1,6 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 import { config } from './config';
-import { Feedback, FeedbackStatus, Org, OrgPhone } from './types';
+import { Feedback, FeedbackStatus, Org, OrgPhone, OrgPlan } from './types';
 
 // Windows/undici occasionally drops connections to Supabase ("fetch failed").
 // Retry only network-level failures (connection never established) — HTTP
@@ -39,6 +39,9 @@ function toOrg(row: Record<string, any>): Org {
     phones: Array.isArray(row.org_phones)
       ? row.org_phones.map((p: any) => ({ phone: p.phone, label: p.label }))
       : undefined,
+    plan: row.plan ?? 'shared',
+    whatsappPhoneNumberId: row.whatsapp_phone_number_id ?? null,
+    whatsappToken: row.whatsapp_token ?? null,
   };
 }
 
@@ -106,6 +109,9 @@ export interface OrgInput {
   templateName?: string;
   feedbackDelayMinutes?: number;
   isActive?: boolean;
+  plan?: OrgPlan;
+  whatsappPhoneNumberId?: string | null;
+  whatsappToken?: string | null;
 }
 
 function orgInputToRow(input: Partial<OrgInput>): Record<string, unknown> {
@@ -117,6 +123,9 @@ function orgInputToRow(input: Partial<OrgInput>): Record<string, unknown> {
   if (input.templateName !== undefined) row.template_name = input.templateName;
   if (input.feedbackDelayMinutes !== undefined) row.feedback_delay_minutes = input.feedbackDelayMinutes;
   if (input.isActive !== undefined) row.is_active = input.isActive;
+  if (input.plan !== undefined) row.plan = input.plan;
+  if (input.whatsappPhoneNumberId !== undefined) row.whatsapp_phone_number_id = input.whatsappPhoneNumberId;
+  if (input.whatsappToken !== undefined) row.whatsapp_token = input.whatsappToken;
   return row;
 }
 

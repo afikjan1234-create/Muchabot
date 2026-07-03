@@ -12,7 +12,13 @@ import {
   updateOrg,
 } from './db';
 import { looksLikePhone } from './ocr';
-import { FeedbackStatus, OrgPhone } from './types';
+import { FeedbackStatus, OrgPhone, OrgPlan } from './types';
+
+function parsePlan(raw: unknown): OrgPlan | undefined {
+  if (raw === undefined) return undefined;
+  if (raw !== 'shared' && raw !== 'dedicated') throw new Error(`סוג חיבור לא תקין: ${raw}`);
+  return raw;
+}
 
 export const adminRouter = Router();
 
@@ -65,6 +71,9 @@ adminRouter.post(
     if (!b?.name || !b?.managerPhone) throw new Error('חסר שם מסעדה או טלפון מנהל');
     const managerPhone = looksLikePhone(String(b.managerPhone));
     if (!managerPhone) throw new Error(`טלפון מנהל לא תקין: ${b.managerPhone}`);
+    if (b.plan === 'dedicated' && !String(b.whatsappPhoneNumberId ?? '').trim()) {
+      throw new Error('חיבור ייעודי דורש Phone Number ID');
+    }
     const org = await createOrg(
       {
         name: String(b.name),
@@ -76,6 +85,9 @@ adminRouter.post(
           b.feedbackDelayMinutes !== undefined && b.feedbackDelayMinutes !== ''
             ? parseInt(b.feedbackDelayMinutes)
             : undefined,
+        plan: parsePlan(b.plan),
+        whatsappPhoneNumberId: b.whatsappPhoneNumberId ? String(b.whatsappPhoneNumberId).trim() : null,
+        whatsappToken: b.whatsappToken ? String(b.whatsappToken).trim() : null,
       },
       parsePhones(b.phones)
     );
@@ -103,6 +115,13 @@ adminRouter.put(
         feedbackDelayMinutes:
           b.feedbackDelayMinutes !== undefined ? parseInt(b.feedbackDelayMinutes) : undefined,
         isActive: typeof b.isActive === 'boolean' ? b.isActive : undefined,
+        plan: parsePlan(b.plan),
+        whatsappPhoneNumberId:
+          b.whatsappPhoneNumberId !== undefined
+            ? String(b.whatsappPhoneNumberId).trim() || null
+            : undefined,
+        whatsappToken:
+          b.whatsappToken !== undefined ? String(b.whatsappToken).trim() || null : undefined,
       },
       b.phones !== undefined ? parsePhones(b.phones) : undefined
     );

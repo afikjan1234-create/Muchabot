@@ -1,12 +1,14 @@
 import { claimDueFeedbacks, resetStuckSending, updateFeedback } from './db';
-import { sendFeedbackTemplate, sendTextMessage } from './whatsapp';
+import { sendFeedbackTemplate, sendTextMessage, credentialsFor } from './whatsapp';
 import { config } from './config';
 import { Feedback } from './types';
 
 async function sendOne(feedback: Feedback): Promise<void> {
   const org = feedback.org!;
+  const creds = credentialsFor(org);
   try {
     const wamid = await sendFeedbackTemplate(
+      creds,
       feedback.customerPhone,
       org.templateName,
       org.managerName,
@@ -27,6 +29,7 @@ async function sendOne(feedback: Feedback): Promise<void> {
     // Best-effort: tell the restaurant manager the message never went out
     try {
       await sendTextMessage(
+        creds,
         org.managerPhone,
         `⚠️ [${org.name}] שליחת הודעת פידבק ל${feedback.customerName || feedback.customerPhone} (+${feedback.customerPhone}) נכשלה. בדוק שהמספר תקין ונסה שוב דרך דף הניהול.`
       );
