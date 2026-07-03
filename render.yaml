@@ -1,0 +1,26 @@
+# Render blueprint — free web service running the bot's Docker image.
+# Secrets (WHATSAPP_TOKEN etc.) are set via the Render dashboard/API,
+# never committed to git.
+services:
+  - type: web
+    name: restaurant-feedback-bot
+    runtime: docker
+    plan: free
+    region: frankfurt
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: WHATSAPP_TOKEN
+        sync: false
+      - key: WHATSAPP_PHONE_NUMBER_ID
+        sync: false
+      - key: WEBHOOK_VERIFY_TOKEN
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_KEY
+        sync: false
+      - key: ADMIN_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false

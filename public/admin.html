@@ -1,0 +1,405 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ניהול בוט פידבק למסעדות</title>
+<style>
+  :root {
+    --bg: #f4f6fb; --card: #ffffff; --text: #1a2233; --muted: #6b7487;
+    --primary: #16a34a; --primary-dark: #15803d; --danger: #dc2626;
+    --border: #e3e7ef; --radius: 12px;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body { font-family: 'Segoe UI', 'Heebo', Arial, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
+  header { background: var(--card); border-bottom: 1px solid var(--border); padding: 14px 28px; display: flex; align-items: center; justify-content: space-between; }
+  header h1 { font-size: 20px; }
+  header h1 span { color: var(--primary); }
+  main { max-width: 1180px; margin: 0 auto; padding: 24px 20px 60px; }
+
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 14px; margin-bottom: 26px; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px 18px; }
+  .card .num { font-size: 28px; font-weight: 700; }
+  .card .lbl { color: var(--muted); font-size: 13px; margin-top: 2px; }
+  .card.green .num { color: var(--primary); }
+  .card.red .num { color: var(--danger); }
+  .card.blue .num { color: #2563eb; }
+  .card.orange .num { color: #d97706; }
+
+  section { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; margin-bottom: 24px; }
+  section h2 { font-size: 17px; margin-bottom: 14px; display: flex; justify-content: space-between; align-items: center; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th { text-align: right; color: var(--muted); font-weight: 600; font-size: 12.5px; padding: 8px 10px; border-bottom: 2px solid var(--border); white-space: nowrap; }
+  td { padding: 9px 10px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+  tr:last-child td { border-bottom: none; }
+
+  .badge { display: inline-block; padding: 3px 10px; border-radius: 20px; font-size: 12px; font-weight: 600; white-space: nowrap; }
+  .b-pending { background: #fef3c7; color: #92400e; }
+  .b-sent { background: #dbeafe; color: #1d4ed8; }
+  .b-completed { background: #dcfce7; color: #15803d; }
+  .b-error { background: #fee2e2; color: #b91c1c; }
+  .b-cancelled { background: #e5e7eb; color: #4b5563; }
+  .b-positive { background: #dcfce7; color: #15803d; }
+  .b-manager { background: #fee2e2; color: #b91c1c; }
+  .b-active { background: #dcfce7; color: #15803d; }
+  .b-inactive { background: #e5e7eb; color: #4b5563; }
+
+  button { font-family: inherit; font-size: 14px; border: none; border-radius: 8px; padding: 8px 16px; cursor: pointer; transition: opacity .15s; }
+  button:hover { opacity: .88; }
+  .btn-primary { background: var(--primary); color: #fff; }
+  .btn-ghost { background: transparent; color: var(--muted); border: 1px solid var(--border); }
+  .btn-danger-ghost { background: transparent; color: var(--danger); border: 1px solid #fecaca; }
+  .btn-sm { padding: 4px 10px; font-size: 12.5px; }
+
+  input, select { font-family: inherit; font-size: 14px; padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px; background: #fff; color: var(--text); width: 100%; }
+  input:focus, select:focus { outline: 2px solid #86efac; border-color: var(--primary); }
+  label { font-size: 13px; color: var(--muted); display: block; margin-bottom: 4px; }
+  .field { margin-bottom: 12px; }
+  .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .filters { display: flex; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
+  .filters select { width: auto; min-width: 160px; }
+
+  dialog { border: none; border-radius: var(--radius); padding: 0; width: min(520px, 92vw); box-shadow: 0 20px 60px rgba(0,0,0,.2); }
+  dialog::backdrop { background: rgba(15,23,42,.45); }
+  .dlg-head { padding: 16px 22px; border-bottom: 1px solid var(--border); font-weight: 700; font-size: 16px; }
+  .dlg-body { padding: 18px 22px; max-height: 65vh; overflow-y: auto; }
+  .dlg-foot { padding: 14px 22px; border-top: 1px solid var(--border); display: flex; gap: 10px; justify-content: flex-start; }
+
+  #login { max-width: 380px; margin: 12vh auto; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 30px; }
+  #login h2 { margin-bottom: 6px; }
+  #login p { color: var(--muted); font-size: 13.5px; margin-bottom: 18px; }
+  .hidden { display: none !important; }
+  .muted { color: var(--muted); font-size: 13px; }
+  .empty { text-align: center; color: var(--muted); padding: 26px 0; }
+  #toast { position: fixed; bottom: 22px; right: 50%; transform: translateX(50%); background: #1a2233; color: #fff; padding: 10px 22px; border-radius: 10px; font-size: 14px; opacity: 0; transition: opacity .25s; pointer-events: none; z-index: 99; }
+  #toast.show { opacity: 1; }
+  .phone-row { display: flex; gap: 8px; margin-bottom: 8px; }
+  .phone-row input:first-child { direction: ltr; text-align: right; }
+</style>
+</head>
+<body>
+
+<div id="login">
+  <h2>🍽️ ניהול בוט פידבק</h2>
+  <p>הזן מפתח ניהול (ADMIN_KEY מקובץ ההגדרות של השרת)</p>
+  <div class="field"><input type="password" id="loginKey" placeholder="מפתח ניהול"></div>
+  <button class="btn-primary" style="width:100%" onclick="doLogin()">כניסה</button>
+  <p id="loginErr" style="color:var(--danger); margin-top:10px;"></p>
+</div>
+
+<div id="app" class="hidden">
+<header>
+  <h1>🍽️ בוט פידבק <span>למסעדות</span></h1>
+  <button class="btn-ghost btn-sm" onclick="logout()">התנתקות</button>
+</header>
+<main>
+  <div class="cards" id="statsCards"></div>
+
+  <section>
+    <h2>מסעדות <button class="btn-primary btn-sm" onclick="openOrgModal()">+ הוספת מסעדה</button></h2>
+    <div style="overflow-x:auto"><table id="orgsTable">
+      <thead><tr>
+        <th>שם</th><th>מנהל</th><th>טלפון מנהל</th><th>טלפונים מורשים</th><th>השהיה (דק')</th><th>תבנית</th><th>סטטוס</th><th></th>
+      </tr></thead>
+      <tbody></tbody>
+    </table></div>
+  </section>
+
+  <section>
+    <h2>משובים <button class="btn-primary btn-sm" onclick="openFeedbackModal()">+ שליחה ידנית</button></h2>
+    <div class="filters">
+      <select id="filterOrg" onchange="loadFeedbacks()"><option value="">כל המסעדות</option></select>
+      <select id="filterStatus" onchange="loadFeedbacks()">
+        <option value="">כל הסטטוסים</option>
+        <option value="pending">ממתין לשליחה</option>
+        <option value="sent">נשלח - ממתין לתגובה</option>
+        <option value="completed">הושלם</option>
+        <option value="error">שגיאה</option>
+        <option value="cancelled">בוטל</option>
+      </select>
+      <button class="btn-ghost btn-sm" onclick="refreshAll()">🔄 רענון</button>
+    </div>
+    <div style="overflow-x:auto"><table id="fbTable">
+      <thead><tr>
+        <th>מסעדה</th><th>לקוח</th><th>טלפון</th><th>נוצר</th><th>מתוזמן ל-</th><th>סטטוס</th><th>תוצאה</th><th>תלונה / שגיאה</th><th></th>
+      </tr></thead>
+      <tbody></tbody>
+    </table></div>
+  </section>
+</main>
+</div>
+
+<!-- Org add/edit modal -->
+<dialog id="orgModal">
+  <div class="dlg-head" id="orgModalTitle">הוספת מסעדה</div>
+  <div class="dlg-body">
+    <input type="hidden" id="orgId">
+    <div class="field"><label>שם המסעדה *</label><input id="orgName" placeholder="למשל: מוצ'ה הרצליה"></div>
+    <div class="row2">
+      <div class="field"><label>שם המנהל</label><input id="orgManagerName" placeholder="למשל: אלעד"></div>
+      <div class="field"><label>טלפון מנהל * (מקבל תלונות)</label><input id="orgManagerPhone" placeholder="0501234567" style="direction:ltr;text-align:right"></div>
+    </div>
+    <div class="field"><label>קישור דירוג בוולט</label><input id="orgWolt" placeholder="https://wolt.com/..." style="direction:ltr;text-align:right"></div>
+    <div class="row2">
+      <div class="field"><label>השהיה לפני שליחה (דקות)</label><input id="orgDelay" type="number" value="60" min="0"></div>
+      <div class="field"><label>שם תבנית WhatsApp</label><input id="orgTemplate" placeholder="restaurant_ranking" style="direction:ltr;text-align:right"></div>
+    </div>
+    <div class="field">
+      <label>טלפונים מורשים לשליחת לקוחות (בעלים/צוות)</label>
+      <div id="phonesList"></div>
+      <button class="btn-ghost btn-sm" onclick="addPhoneRow()">+ הוספת טלפון</button>
+    </div>
+    <div class="field" id="activeField" style="display:none">
+      <label>סטטוס</label>
+      <select id="orgActive"><option value="true">פעילה</option><option value="false">מושבתת</option></select>
+    </div>
+  </div>
+  <div class="dlg-foot">
+    <button class="btn-primary" onclick="saveOrg()">שמירה</button>
+    <button class="btn-ghost" onclick="orgModal.close()">ביטול</button>
+    <button class="btn-danger-ghost hidden" id="orgDeleteBtn" onclick="removeOrg()" style="margin-right:auto">מחיקה</button>
+  </div>
+</dialog>
+
+<!-- Manual feedback modal -->
+<dialog id="fbModal">
+  <div class="dlg-head">שליחת בקשת פידבק ידנית</div>
+  <div class="dlg-body">
+    <div class="field"><label>מסעדה *</label><select id="fbOrg"></select></div>
+    <div class="row2">
+      <div class="field"><label>טלפון לקוח *</label><input id="fbPhone" placeholder="0501234567" style="direction:ltr;text-align:right"></div>
+      <div class="field"><label>שם לקוח</label><input id="fbName" placeholder="למשל: דנה"></div>
+    </div>
+    <div class="field"><label>השהיה בדקות (ריק = ברירת מחדל של המסעדה)</label><input id="fbDelay" type="number" min="0" placeholder="60"></div>
+  </div>
+  <div class="dlg-foot">
+    <button class="btn-primary" onclick="saveFeedback()">תזמון שליחה</button>
+    <button class="btn-ghost" onclick="fbModal.close()">ביטול</button>
+  </div>
+</dialog>
+
+<div id="toast"></div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let orgs = [];
+
+function adminKey() { return localStorage.getItem('adminKey') || ''; }
+
+async function api(path, opts = {}) {
+  const res = await fetch('/api' + path, {
+    ...opts,
+    headers: { 'Content-Type': 'application/json', 'x-admin-key': adminKey(), ...(opts.headers || {}) },
+  });
+  if (res.status === 401) { logout(); throw new Error('unauthorized'); }
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'שגיאה');
+  return data;
+}
+
+function toast(msg, isError = false) {
+  const t = $('toast');
+  t.textContent = msg;
+  t.style.background = isError ? 'var(--danger)' : '#1a2233';
+  t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), 3200);
+}
+
+// ─── Auth ──────────────────────────────────────────────
+async function doLogin() {
+  localStorage.setItem('adminKey', $('loginKey').value.trim());
+  try {
+    await api('/stats');
+    $('login').classList.add('hidden');
+    $('app').classList.remove('hidden');
+    refreshAll();
+  } catch {
+    $('loginErr').textContent = 'מפתח שגוי, נסה שוב.';
+  }
+}
+function logout() {
+  localStorage.removeItem('adminKey');
+  $('app').classList.add('hidden');
+  $('login').classList.remove('hidden');
+}
+
+// ─── Stats ─────────────────────────────────────────────
+async function loadStats() {
+  const stats = await api('/stats');
+  const sum = (k) => stats.reduce((a, s) => a + Number(s[k] || 0), 0);
+  $('statsCards').innerHTML = `
+    <div class="card"><div class="num">${sum('total')}</div><div class="lbl">סה"כ משובים</div></div>
+    <div class="card orange"><div class="num">${sum('pending')}</div><div class="lbl">ממתינים לשליחה</div></div>
+    <div class="card blue"><div class="num">${sum('awaitingReply')}</div><div class="lbl">ממתינים לתגובת לקוח</div></div>
+    <div class="card green"><div class="num">${sum('positive')}</div><div class="lbl">חוויות חיוביות ⭐</div></div>
+    <div class="card red"><div class="num">${sum('managerRequests')}</div><div class="lbl">פניות למנהל</div></div>
+    <div class="card red"><div class="num">${sum('errors')}</div><div class="lbl">שגיאות שליחה</div></div>`;
+}
+
+// ─── Orgs ──────────────────────────────────────────────
+async function loadOrgs() {
+  orgs = await api('/orgs');
+  const tbody = $('orgsTable').querySelector('tbody');
+  if (!orgs.length) { tbody.innerHTML = '<tr><td colspan="8" class="empty">אין מסעדות עדיין — הוסף את הראשונה!</td></tr>'; }
+  else {
+    tbody.innerHTML = orgs.map(o => `
+      <tr>
+        <td><b>${esc(o.name)}</b></td>
+        <td>${esc(o.managerName)}</td>
+        <td dir="ltr">+${esc(o.managerPhone)}</td>
+        <td dir="ltr">${(o.phones || []).map(p => '+' + esc(p.phone)).join('<br>') || '—'}</td>
+        <td>${o.feedbackDelayMinutes}</td>
+        <td dir="ltr">${esc(o.templateName)}</td>
+        <td><span class="badge ${o.isActive ? 'b-active' : 'b-inactive'}">${o.isActive ? 'פעילה' : 'מושבתת'}</span></td>
+        <td><button class="btn-ghost btn-sm" onclick="openOrgModal('${o.id}')">עריכה</button></td>
+      </tr>`).join('');
+  }
+  // fill filter + manual-send selects
+  const opts = orgs.map(o => `<option value="${o.id}">${esc(o.name)}</option>`).join('');
+  const cur = $('filterOrg').value;
+  $('filterOrg').innerHTML = '<option value="">כל המסעדות</option>' + opts;
+  $('filterOrg').value = cur;
+  $('fbOrg').innerHTML = opts;
+}
+
+function esc(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+function addPhoneRow(phone = '', label = '') {
+  const div = document.createElement('div');
+  div.className = 'phone-row';
+  div.innerHTML = `<input placeholder="0501234567" value="${esc(phone)}"><input placeholder="תיאור (בעלים / משמרת...)" value="${esc(label)}"><button class="btn-danger-ghost btn-sm" onclick="this.parentElement.remove()">✕</button>`;
+  $('phonesList').appendChild(div);
+}
+
+function openOrgModal(id) {
+  const org = orgs.find(o => o.id === id);
+  $('orgModalTitle').textContent = org ? 'עריכת מסעדה' : 'הוספת מסעדה';
+  $('orgId').value = org?.id || '';
+  $('orgName').value = org?.name || '';
+  $('orgManagerName').value = org?.managerName || '';
+  $('orgManagerPhone').value = org ? '+' + org.managerPhone : '';
+  $('orgWolt').value = org?.woltRatingUrl || '';
+  $('orgDelay').value = org?.feedbackDelayMinutes ?? 60;
+  $('orgTemplate').value = org?.templateName || 'restaurant_ranking';
+  $('orgActive').value = String(org?.isActive ?? true);
+  $('activeField').style.display = org ? 'block' : 'none';
+  $('orgDeleteBtn').classList.toggle('hidden', !org);
+  $('phonesList').innerHTML = '';
+  (org?.phones?.length ? org.phones : [{ phone: '', label: '' }]).forEach(p => addPhoneRow(p.phone ? '+' + p.phone : '', p.label));
+  orgModal.showModal();
+}
+
+async function saveOrg() {
+  const id = $('orgId').value;
+  const phones = [...$('phonesList').querySelectorAll('.phone-row')]
+    .map(r => ({ phone: r.children[0].value.trim(), label: r.children[1].value.trim() }))
+    .filter(p => p.phone);
+  const body = {
+    name: $('orgName').value.trim(),
+    managerName: $('orgManagerName').value.trim(),
+    managerPhone: $('orgManagerPhone').value.trim(),
+    woltRatingUrl: $('orgWolt').value.trim(),
+    feedbackDelayMinutes: $('orgDelay').value,
+    templateName: $('orgTemplate').value.trim() || 'restaurant_ranking',
+    isActive: $('orgActive').value === 'true',
+    phones,
+  };
+  try {
+    await api(id ? `/orgs/${id}` : '/orgs', { method: id ? 'PUT' : 'POST', body: JSON.stringify(body) });
+    orgModal.close();
+    toast('נשמר בהצלחה ✓');
+    refreshAll();
+  } catch (e) { toast(e.message, true); }
+}
+
+async function removeOrg() {
+  const id = $('orgId').value;
+  const org = orgs.find(o => o.id === id);
+  if (!confirm(`למחוק את "${org?.name}"? כל המשובים שלה יימחקו. אי אפשר לבטל.`)) return;
+  try {
+    await api(`/orgs/${id}`, { method: 'DELETE' });
+    orgModal.close();
+    toast('נמחק');
+    refreshAll();
+  } catch (e) { toast(e.message, true); }
+}
+
+// ─── Feedbacks ─────────────────────────────────────────
+const STATUS_HE = { pending: 'ממתין', sending: 'נשלח כעת...', sent: 'ממתין לתגובה', completed: 'הושלם', error: 'שגיאה', cancelled: 'בוטל' };
+const STATUS_CLS = { pending: 'b-pending', sending: 'b-pending', sent: 'b-sent', completed: 'b-completed', error: 'b-error', cancelled: 'b-cancelled' };
+const RESULT_HE = { positive: 'חיובי ⭐', manager: 'פנייה למנהל' };
+
+function fmtDate(iso) {
+  if (!iso) return '—';
+  return new Date(iso).toLocaleString('he-IL', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Jerusalem' });
+}
+
+async function loadFeedbacks() {
+  const params = new URLSearchParams();
+  if ($('filterOrg').value) params.set('orgId', $('filterOrg').value);
+  if ($('filterStatus').value) params.set('status', $('filterStatus').value);
+  const fbs = await api('/feedbacks?' + params);
+  const tbody = $('fbTable').querySelector('tbody');
+  if (!fbs.length) { tbody.innerHTML = '<tr><td colspan="9" class="empty">אין משובים להצגה</td></tr>'; return; }
+  tbody.innerHTML = fbs.map(f => `
+    <tr>
+      <td>${esc(f.org?.name || '')}</td>
+      <td>${esc(f.customerName) || '—'}</td>
+      <td dir="ltr">+${esc(f.customerPhone)}</td>
+      <td class="muted">${fmtDate(f.createdAt)}</td>
+      <td class="muted">${fmtDate(f.scheduledAt)}</td>
+      <td><span class="badge ${STATUS_CLS[f.status] || ''}">${STATUS_HE[f.status] || f.status}</span></td>
+      <td>${f.result ? `<span class="badge ${f.result === 'positive' ? 'b-positive' : 'b-manager'}">${RESULT_HE[f.result]}</span>` : '—'}</td>
+      <td style="max-width:220px">${esc(f.complaint || f.errorDetail || '') || '—'}</td>
+      <td>${f.status === 'pending' ? `<button class="btn-danger-ghost btn-sm" onclick="cancelFb(${f.id})">ביטול</button>` : ''}</td>
+    </tr>`).join('');
+}
+
+async function cancelFb(id) {
+  try { await api(`/feedbacks/${id}/cancel`, { method: 'POST' }); toast('בוטל'); refreshAll(); }
+  catch (e) { toast(e.message, true); }
+}
+
+function openFeedbackModal() {
+  if (!orgs.length) return toast('הוסף מסעדה קודם', true);
+  $('fbPhone').value = ''; $('fbName').value = ''; $('fbDelay').value = '';
+  fbModal.showModal();
+}
+
+async function saveFeedback() {
+  try {
+    await api('/feedbacks', {
+      method: 'POST',
+      body: JSON.stringify({
+        orgId: $('fbOrg').value,
+        customerPhone: $('fbPhone').value.trim(),
+        customerName: $('fbName').value.trim(),
+        delayMinutes: $('fbDelay').value.trim(),
+      }),
+    });
+    fbModal.close();
+    toast('תוזמן בהצלחה ✓');
+    refreshAll();
+  } catch (e) { toast(e.message, true); }
+}
+
+// ─── Boot ──────────────────────────────────────────────
+function refreshAll() { loadStats(); loadOrgs().then(loadFeedbacks); }
+
+$('loginKey').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
+
+(async () => {
+  if (adminKey()) {
+    try {
+      await api('/stats');
+      $('login').classList.add('hidden');
+      $('app').classList.remove('hidden');
+      refreshAll();
+      setInterval(refreshAll, 30000);
+    } catch { /* stays on login */ }
+  }
+})();
+</script>
+</body>
+</html>

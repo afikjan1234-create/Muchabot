@@ -1,0 +1,20 @@
+# Backup keep-alive: pings the bot's public URL so Render's free tier never
+# spins it down (the bot also self-pings; this covers restarts/cold starts).
+# Set the PING_URL repository variable to https://<service>.onrender.com/health
+name: keepalive
+on:
+  schedule:
+    - cron: '*/14 * * * *'
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping bot health endpoint
+        run: |
+          if [ -n "${{ vars.PING_URL }}" ]; then
+            curl -sS -m 40 "${{ vars.PING_URL }}" || true
+          else
+            echo "PING_URL repo variable not set — skipping"
+          fi
