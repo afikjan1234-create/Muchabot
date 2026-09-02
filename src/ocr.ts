@@ -122,7 +122,11 @@ async function extractPhoneWithTesseract(
 
 // ─── Gemini (reads both phone and Hebrew customer name) ────────────────────
 
-const GEMINI_MODELS = ['gemini-2.5-flash', 'gemini-2.0-flash'];
+// Rolling aliases, deliberately not pinned versions. This integration was dead
+// in production partly because the pinned `gemini-2.5-flash` had since been
+// withdrawn from new users: every call 404'd, and the only visible symptom was
+// the bot quietly falling back to digits-only OCR. An alias cannot go stale.
+const GEMINI_MODELS = ['gemini-flash-latest', 'gemini-flash-lite-latest'];
 
 function geminiUrl(model: string): string {
   return `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${config.geminiApiKey}`;
@@ -211,7 +215,9 @@ async function callGemini(
   } catch (err: any) {
     const status = err.response?.status;
     console.error(`[gemini] ${model} on ${variant.name} failed:`, status ?? err.message);
-    return { reading: null, retryable: status === 503 || status === 429 };
+    // 503/429 are overload; 404 means the model was withdrawn under us. All
+    // three are worth re-attempting on the sibling model rather than giving up.
+    return { reading: null, retryable: status === 503 || status === 429 || status === 404 };
   }
 }
 
