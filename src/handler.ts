@@ -5,7 +5,12 @@ import {
   updateFeedback,
 } from './db';
 import { sendTextMessage, sendReplyButtons, downloadMedia, credentialsFor } from './whatsapp';
-import { extractCustomerFromImage, looksLikePhone } from './ocr';
+import {
+  extractCustomerFromImage,
+  formatIsraeliPhone,
+  isReachableOnWhatsApp,
+  looksLikePhone,
+} from './ocr';
 import { Org } from './types';
 
 // ─── Owner (restaurant) flow ────────────────────────────────────────────────
@@ -15,6 +20,7 @@ import { Org } from './types';
 type PendingOwnerState = (
   | { state: 'waiting_for_name'; customerPhone: string }
   | { state: 'waiting_for_phone' }
+  | { state: 'confirming_phone'; customerPhone: string; customerName: string | null }
 ) & { setAt: number };
 
 const pendingOwnerStates = new Map<string, PendingOwnerState>();
@@ -64,6 +70,21 @@ export async function handleOwnerImage(
 
   // Caption wins over OCR-extracted name — the owner typed it on purpose
   const customerName = caption?.trim() || extracted.name;
+
+  // A number read off a blurry photo gets one human glance before we message
+  // it. Scheduling on a misread digit sends this restaurant's feedback request
+  // to a stranger, and neither the owner nor the customer would ever find out.
+  if (extracted.confidence === 'low') {
+    pendingOwnerStates.set(ownerPhone, {
+      state: 'confirming_phone',
+      customerPhone: extracted.phone,
+      customerName: customerName ?? null,
+      setAt: Date.now(),
+    });
+    const nameLine = customerName ? `\nשם: ${customerName}` : '';
+    return `🔍 התמונה לא הייתה חדה, אז כדאי לוודא.\nמספר: ${formatIsraeliPhone(extracted.phone)}${nameLine}\n\nהאם זה נכון? השב "כן" לאישור, או שלח את המספר הנכון.`;
+  }
+
   if (customerName) {
     return scheduleAndConfirm(org, extracted.phone, customerName);
   }
@@ -76,6 +97,33 @@ export async function handleOwnerImage(
   return `✅ זוהה מספר: +${extracted.phone}\nמה שם הלקוח?`;
 }
 
+const CONFIRM_PATTERN = /^(כן|נכון|אישור|מאשר|אוקיי|אוקי|ok|yes|✅|👍)$/i;
+
+const UNREACHABLE_REPLY =
+  '⚠️ זה לא נראה כמו מספר נייד ישראלי, ו-WhatsApp לא יוכל להגיע אליו.\nשלח מספר בפורמט 0501234567 (או "ביטול")';
+
+/**
+ * Takes a customer phone the owner has vouched for and moves to the next step:
+ * scheduling right away when the name is already known, otherwise asking for it.
+ */
+async function acceptPhone(
+  org: Org,
+  ownerPhone: string,
+  phone: string,
+  name: string | null
+): Promise<string> {
+  if (name) {
+    pendingOwnerStates.delete(ownerPhone);
+    return scheduleAndConfirm(org, phone, name);
+  }
+  pendingOwnerStates.set(ownerPhone, {
+    state: 'waiting_for_name',
+    customerPhone: phone,
+    setAt: Date.now(),
+  });
+  return `✅ מספר: ${formatIsraeliPhone(phone)}\nמה שם הלקוח?`;
+}
+
 export async function handleOwnerText(org: Org, ownerPhone: string, text: string): Promise<string> {
   const trimmed = text.trim();
 
@@ -86,11 +134,25 @@ export async function handleOwnerText(org: Org, ownerPhone: string, text: string
 
   const pending = getPendingState(ownerPhone);
 
+  // Proof-reading a number the bot read off a poor-quality image: either the
+  // owner confirms it, or the correction they send replaces it outright.
+  if (pending?.state === 'confirming_phone') {
+    if (CONFIRM_PATTERN.test(trimmed)) {
+      return acceptPhone(org, ownerPhone, pending.customerPhone, pending.customerName);
+    }
+    const corrected = looksLikePhone(trimmed);
+    if (corrected) {
+      if (!isReachableOnWhatsApp(corrected)) return UNREACHABLE_REPLY;
+      return acceptPhone(org, ownerPhone, corrected, pending.customerName);
+    }
+    return `לא הבנתי. אם ${formatIsraeliPhone(pending.customerPhone)} נכון — השב "כן".\nאחרת שלח את המספר הנכון, או "ביטול".`;
+  }
+
   if (!pending || pending.state === 'waiting_for_phone') {
     const phone = looksLikePhone(trimmed);
     if (phone) {
-      pendingOwnerStates.set(ownerPhone, { state: 'waiting_for_name', customerPhone: phone, setAt: Date.now() });
-      return `✅ מספר: +${phone}\nמה שם הלקוח?`;
+      if (!isReachableOnWhatsApp(phone)) return UNREACHABLE_REPLY;
+      return acceptPhone(org, ownerPhone, phone, null);
     }
     if (pending?.state === 'waiting_for_phone') {
       return 'לא זיהיתי מספר טלפון תקין. שלח את המספר בפורמט: 0501234567 (או "ביטול")';
