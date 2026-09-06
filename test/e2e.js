@@ -47,11 +47,11 @@ const customerText = (from, body, ctx) =>
   webhookMessage({ from, type: 'text', text: { body }, ...(ctx ? { context: { id: ctx } } : {}) });
 const customerButton = (from, payload, ctx) =>
   webhookMessage({ from, type: 'button', button: { payload, text: payload }, context: { id: ctx } });
-const customerInteractive = (from, id, title, ctx) =>
+const customerListPick = (from, id, title, ctx) =>
   webhookMessage({
     from,
     type: 'interactive',
-    interactive: { type: 'button_reply', button_reply: { id, title } },
+    interactive: { type: 'list_reply', list_reply: { id, title } },
     context: { id: ctx },
   });
 
@@ -100,6 +100,8 @@ async function main() {
       managerPhone: '0500000002',
       woltRatingUrl: 'https://wolt.com/he/test',
       feedbackDelayMinutes: 0,
+      templateName: 'order_rating',
+      greetingEmoji: '🍣',
       phones: [{ phone: '0500000001', label: 'בעלים' }],
     });
     check('Admin API creates org (phone normalized)', org.id && org.phones?.[0]?.phone === OWNER);
@@ -117,21 +119,28 @@ async function main() {
     // Poller should send the template (delay 0)
     const template = await waitFor(async () =>
       mock.sent.find((m) => m.type === 'template'), 20000);
-    check('Scheduler sends feedback template', !!template && template.summary.includes('restaurant_ranking'),
+    check('Scheduler sends feedback template', !!template && template.summary.includes('order_rating'),
       template && `to=${template.to}`);
     check('Template sent to OCR-extracted customer phone', template?.to === '972521234567', `to=${template?.to}`);
-    // Lock the template param order: header = customer name, body = manager name
+    // The rating template takes ONE body param: restaurant name + its emoji.
     const comps = template?.raw?.template?.components ?? [];
     const headerParam = comps.find((c) => c.type === 'header')?.parameters?.[0]?.text;
     const bodyParam = comps.find((c) => c.type === 'body')?.parameters?.[0]?.text;
-    check('Template header param = customer name', headerParam === 'דנה לוי', `header=${headerParam}`);
-    check('Template body param = manager name', bodyParam === 'מנהל בדיקה', `body=${bodyParam}`);
+    check('Rating template sends no header param', headerParam === undefined, `header=${headerParam}`);
+    check('Rating template body param = restaurant name + emoji',
+      bodyParam === 'מסעדת בדיקה 🍣', `body=${bodyParam}`);
 
-    // ── Scenario B: positive button reply (routed by context wamid) ──
-    await customerButton('972521234567', 'מעולה! 😊', template.wamid);
+    // ── Scenario B: top rating → Wolt link, no manager alert ──
+    mock.sent.length = 0;
+    await customerButton('972521234567', 'היה מדהים', template.wamid);
     const wolt = await waitFor(async () =>
       mock.sent.find((m) => m.to === '972521234567' && m.summary.includes('wolt.com/he/test')));
-    check('Positive reply → Wolt rating link (org-specific URL)', !!wolt);
+    check('Rating 5 → Wolt rating link (org-specific URL)', !!wolt);
+    check('Rating 5 → manager NOT alerted',
+      !mock.sent.some((m) => m.to === '972500000002'));
+    const rated5 = await api('get', `/feedbacks?orgId=${org.id}`);
+    check('Rating 5 stored on the feedback row',
+      rated5.some((f) => f.customerPhone === '972521234567' && f.rating === 5));
 
     // ── Scenario C: owner image WITHOUT caption → asks for name ──
     mock.sent.length = 0;
@@ -152,25 +161,61 @@ async function main() {
       mock.sent.filter((m) => m.type === 'template').pop(), 20000);
     check('Second template sent', !!templateC);
 
-    // ── Scenario D: manager complaint flow (via interactive re-prompt ids) ──
-    await customerInteractive('972521234567', 'FEEDBACK_MANAGER', 'אשמח לדבר עם מנהל', templateC.wamid);
-    // Manager must be notified IMMEDIATELY on the button press, before any reason
-    const managerImmediate = await waitFor(async () =>
-      mock.sent.find((m) => m.to === '972500000002' && m.summary.includes('ביקש לפנות למנהל')));
-    check('Manager button → manager notified immediately (no reason yet)', !!managerImmediate,
-      managerImmediate && `includes customer name: ${managerImmediate.summary.includes('יוסי כהן')}`);
-    const askReason = await waitFor(async () =>
-      mock.sent.find((m) => m.to === '972521234567' && m.summary.includes('מה קרה')));
-    check('Manager button → bot asks what happened', !!askReason);
+    // ── Scenario D: low rating → reason list → immediate alert → note ──
+    mock.sent.length = 0;
+    await customerButton('972521234567', 'לא היה טוב', templateC.wamid);
+    const reasonList = await waitFor(async () =>
+      mock.sent.find((m) => m.to === '972521234567' && m.type === 'interactive'));
+    check('Rating 2 → reason list offered', !!reasonList,
+      reasonList && `type=${reasonList.raw?.interactive?.type}`);
+    check('Reason list is a LIST (5 options exceed the 3-button cap)',
+      reasonList?.raw?.interactive?.type === 'list');
+    const reasonRows = reasonList?.raw?.interactive?.action?.sections?.[0]?.rows ?? [];
+    check('Reason list offers all five reasons', reasonRows.length === 5, `rows=${reasonRows.length}`);
+    check('Food row uses the org emoji', reasonRows[0]?.title === '🍣 האוכל',
+      `first=${reasonRows[0]?.title}`);
+    check('Rating 2 alone does NOT alert the manager yet',
+      !mock.sent.some((m) => m.to === '972500000002'));
 
-    await customerText('972521234567', 'האוכל הגיע קר מאוד');
-    const managerAlert = await waitFor(async () =>
-      mock.sent.find((m) => m.to === '972500000002' && m.summary.includes('האוכל הגיע קר מאוד')));
-    check('Complaint detail forwarded to org manager phone', !!managerAlert,
-      managerAlert && `includes org name: ${managerAlert.summary.includes('מסעדת בדיקה')}`);
+    await customerListPick('972521234567', 'REASON_DELIVERY', '⏱️ זמן המשלוח', reasonList.wamid);
+    // The alert must land on the reason pick — most customers stop there.
+    const alert = await waitFor(async () =>
+      mock.sent.find((m) => m.to === '972500000002' && m.summary.includes('משוב שלילי')));
+    check('Reason pick → manager alerted immediately', !!alert);
+    check('Alert carries customer name', !!alert && alert.summary.includes('יוסי כהן'));
+    check('Alert carries the rating', !!alert && alert.summary.includes('2/5'),
+      alert && alert.summary.slice(0, 120));
+    check('Alert carries the reason', !!alert && alert.summary.includes('זמן המשלוח'));
+    const askNote = await waitFor(async () =>
+      mock.sent.find((m) => m.to === '972521234567' && m.summary.includes('ספר לנו')));
+    check('Reason pick → bot invites a free-text note', !!askNote);
+
+    await customerText('972521234567', 'המשלוח איחר בשעה');
+    const noteFwd = await waitFor(async () =>
+      mock.sent.find((m) => m.to === '972500000002' && m.summary.includes('המשלוח איחר בשעה')));
+    check('Customer note forwarded to manager as a follow-up', !!noteFwd);
     const thanks = await waitFor(async () =>
       mock.sent.find((m) => m.to === '972521234567' && m.summary.includes('יצור איתך קשר')));
     check('Customer gets acknowledgment', !!thanks);
+
+    // ── Scenario D2: rating 4 asks what would have been perfect, alerts nobody ──
+    mock.sent.length = 0;
+    await api('post', '/feedbacks', {
+      orgId: org.id, customerPhone: '0500000094', customerName: 'ארבע', delayMinutes: 0,
+    });
+    const template4 = await waitFor(async () =>
+      mock.sent.find((m) => m.type === 'template' && m.to === '972500000094'), 20000);
+    await customerButton('972500000094', 'היה טוב מאוד', template4.wamid);
+    const perfectQ = await waitFor(async () =>
+      mock.sent.find((m) => m.to === '972500000094' && m.summary.includes('למושלמת')));
+    check('Rating 4 → asks what would have made it perfect', !!perfectQ);
+    check('Rating 4 → no reason list', !mock.sent.some((m) => m.to === '972500000094' && m.type === 'interactive'));
+
+    await customerText('972500000094', 'הרוטב היה מעט חריף');
+    const thanks4 = await waitFor(async () =>
+      mock.sent.find((m) => m.to === '972500000094' && m.summary.includes('משתפרים')));
+    check('Rating 4 note → thanks, and manager stays silent', !!thanks4 &&
+      !mock.sent.some((m) => m.to === '972500000002'));
 
     // ── Scenario E: manual feedback via dashboard API + free-text re-prompt ──
     mock.sent.length = 0;
@@ -185,12 +230,14 @@ async function main() {
     await customerText(CUSTOMER_A, 'אממ לא בטוח');
     const reprompt = await waitFor(async () =>
       mock.sent.find((m) => m.to === CUSTOMER_A && m.type === 'interactive'));
-    check('Unclear free text → interactive buttons re-prompt', !!reprompt);
+    check('Unrecognized free text → rating list re-prompt', !!reprompt);
+    const ratingRows = reprompt?.raw?.interactive?.action?.sections?.[0]?.rows ?? [];
+    check('Re-prompt offers all five ratings', ratingRows.length === 5, `rows=${ratingRows.length}`);
 
-    await customerInteractive(CUSTOMER_A, 'FEEDBACK_POSITIVE', 'הייתה מעולה! 😊', reprompt.wamid);
+    await customerListPick(CUSTOMER_A, 'RATING_5', 'היה מדהים', reprompt.wamid);
     const woltE = await waitFor(async () =>
       mock.sent.find((m) => m.to === CUSTOMER_A && m.summary.includes('wolt.com/he/test')));
-    check('Re-prompt positive → Wolt link (fallback routing by phone)', !!woltE);
+    check('Re-prompt rating 5 → Wolt link (fallback routing by phone)', !!woltE);
 
     // ── Scenario F: cancel pending feedback ──
     const toCancel = await api('post', '/feedbacks', {
@@ -218,11 +265,18 @@ async function main() {
       mock.sent.find((m) => m.type === 'template' && m.to === OWNER), 20000);
     check('Template sent to owner-as-customer', !!templateH);
 
-    await customerInteractive(OWNER, 'FEEDBACK_MANAGER', 'אשמח לדבר עם מנהל', templateH.wamid);
-    const askReasonH = await waitFor(async () =>
-      mock.sent.find((m) => m.to === OWNER && m.summary.includes('מה קרה')));
-    check('Owner button press routed to customer flow', !!askReasonH);
+    await customerButton(OWNER, 'היה בסדר', templateH.wamid);
+    const reasonListH = await waitFor(async () =>
+      mock.sent.find((m) => m.to === OWNER && m.type === 'interactive'));
+    check('Owner button press routed to customer flow', !!reasonListH);
 
+    await customerListPick(OWNER, 'REASON_FOOD', '🍣 האוכל', reasonListH.wamid);
+    const askNoteH = await waitFor(async () =>
+      mock.sent.find((m) => m.to === OWNER && m.summary.includes('ספר לנו')));
+    check('Owner reason pick routed to customer flow', !!askNoteH);
+
+    // The owner's phone is registered to the org, so this text must still be
+    // read as the customer's note rather than an owner command.
     await ownerText('בדיקת תלונה מטלפון הבעלים');
     const managerAlertH = await waitFor(async () =>
       mock.sent.find((m) => m.to === '972500000002' && m.summary.includes('בדיקת תלונה מטלפון הבעלים')));

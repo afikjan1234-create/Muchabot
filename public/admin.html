@@ -143,9 +143,10 @@
       <div class="field"><label>טלפון מנהל * (מקבל תלונות)</label><input id="orgManagerPhone" placeholder="0501234567" style="direction:ltr;text-align:right"></div>
     </div>
     <div class="field"><label>קישור דירוג בוולט</label><input id="orgWolt" placeholder="https://wolt.com/..." style="direction:ltr;text-align:right"></div>
+    <div class="field"><label>אימוג'י המסעדה</label><input id="orgEmoji" placeholder="למשל: 🍣" maxlength="8"><small>מופיע ליד שם המסעדה בהודעה הפותחת וברשימת הסיבות</small></div>
     <div class="row2">
       <div class="field"><label>השהיה לפני שליחה (דקות)</label><input id="orgDelay" type="number" value="60" min="0"></div>
-      <div class="field"><label>שם תבנית WhatsApp</label><input id="orgTemplate" placeholder="restaurant_ranking" style="direction:ltr;text-align:right"></div>
+      <div class="field"><label>שם תבנית WhatsApp</label><input id="orgTemplate" placeholder="order_rating" style="direction:ltr;text-align:right"></div>
     </div>
     <div class="field">
       <label>טלפונים מורשים לשליחת לקוחות (בעלים/צוות)</label>
@@ -301,7 +302,8 @@ function openOrgModal(id) {
   $('orgManagerPhone').value = org ? '+' + org.managerPhone : '';
   $('orgWolt').value = org?.woltRatingUrl || '';
   $('orgDelay').value = org?.feedbackDelayMinutes ?? 60;
-  $('orgTemplate').value = org?.templateName || 'restaurant_ranking';
+  $('orgEmoji').value = org?.greetingEmoji || '';
+  $('orgTemplate').value = org?.templateName || 'order_rating';
   $('orgActive').value = String(org?.isActive ?? true);
   $('activeField').style.display = org ? 'block' : 'none';
   $('orgDeleteBtn').classList.toggle('hidden', !org);
@@ -329,7 +331,8 @@ async function saveOrg() {
     managerPhone: $('orgManagerPhone').value.trim(),
     woltRatingUrl: $('orgWolt').value.trim(),
     feedbackDelayMinutes: $('orgDelay').value,
-    templateName: $('orgTemplate').value.trim() || 'restaurant_ranking',
+    greetingEmoji: $('orgEmoji').value.trim(),
+    templateName: $('orgTemplate').value.trim() || 'order_rating',
     isActive: $('orgActive').value === 'true',
     phones,
     plan,

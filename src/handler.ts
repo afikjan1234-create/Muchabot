@@ -4,23 +4,49 @@ import {
   getFeedbackByWamid,
   updateFeedback,
 } from './db';
-import { sendTextMessage, sendReplyButtons, downloadMedia, credentialsFor } from './whatsapp';
+import {
+  sendTextMessage,
+  sendListMessage,
+  downloadMedia,
+  credentialsFor,
+  restaurantLabel,
+} from './whatsapp';
 import {
   extractCustomerFromImage,
   formatIsraeliPhone,
   isReachableOnWhatsApp,
   looksLikePhone,
 } from './ocr';
-import { Org } from './types';
+import {
+  NEGATIVE_RATING_MAX,
+  RATING_OPTIONS,
+  REASON_OPTIONS,
+  parseRating,
+  parseReason,
+  ratingRowId,
+  reasonRowTitle,
+} from './rating';
+import { Feedback, Org, WhatsAppCredentials } from './types';
+
+/** Details read off the order screenshot and carried until the row is created. */
+interface OrderDetails {
+  orderNumber: string | null;
+  orderAmount: string | null;
+}
 
 // ─── Owner (restaurant) flow ────────────────────────────────────────────────
 // Ephemeral per-owner conversation state; keyed by the owner's phone so
 // multiple restaurants can talk to the bot at the same time.
 
 type PendingOwnerState = (
-  | { state: 'waiting_for_name'; customerPhone: string }
+  | { state: 'waiting_for_name'; customerPhone: string; order: OrderDetails }
   | { state: 'waiting_for_phone' }
-  | { state: 'confirming_phone'; customerPhone: string; customerName: string | null }
+  | {
+      state: 'confirming_phone';
+      customerPhone: string;
+      customerName: string | null;
+      order: OrderDetails;
+    }
 ) & { setAt: number };
 
 const pendingOwnerStates = new Map<string, PendingOwnerState>();
@@ -29,6 +55,8 @@ const pendingOwnerStates = new Map<string, PendingOwnerState>();
 // owner texts sent hours later (that's how a complaint once became a
 // customer name). Expire pending prompts after 15 minutes.
 const PENDING_TTL_MS = 15 * 60_000;
+
+const NO_ORDER: OrderDetails = { orderNumber: null, orderAmount: null };
 
 function getPendingState(ownerPhone: string): PendingOwnerState | undefined {
   const pending = pendingOwnerStates.get(ownerPhone);
@@ -48,9 +76,14 @@ function formatTime(date: Date): string {
   });
 }
 
-async function scheduleAndConfirm(org: Org, customerPhone: string, customerName: string): Promise<string> {
+async function scheduleAndConfirm(
+  org: Org,
+  customerPhone: string,
+  customerName: string,
+  order: OrderDetails
+): Promise<string> {
   const scheduledAt = new Date(Date.now() + org.feedbackDelayMinutes * 60_000);
-  await createFeedback(org.id, customerPhone, customerName, scheduledAt);
+  await createFeedback(org.id, customerPhone, customerName, scheduledAt, order);
   return `✅ נקלט: ${customerName} (+${customerPhone})\nהודעת פידבק מטעם ${org.name} תישלח ב-${formatTime(scheduledAt)}.`;
 }
 
@@ -62,6 +95,10 @@ export async function handleOwnerImage(
 ): Promise<string> {
   const { buffer, mimeType } = await downloadMedia(credentialsFor(org), mediaId);
   const extracted = await extractCustomerFromImage(buffer, mimeType);
+  const order: OrderDetails = {
+    orderNumber: extracted.orderNumber,
+    orderAmount: extracted.orderAmount,
+  };
 
   if (!extracted.phone) {
     pendingOwnerStates.set(ownerPhone, { state: 'waiting_for_phone', setAt: Date.now() });
@@ -79,6 +116,7 @@ export async function handleOwnerImage(
       state: 'confirming_phone',
       customerPhone: extracted.phone,
       customerName: customerName ?? null,
+      order,
       setAt: Date.now(),
     });
     const nameLine = customerName ? `\nשם: ${customerName}` : '';
@@ -86,12 +124,13 @@ export async function handleOwnerImage(
   }
 
   if (customerName) {
-    return scheduleAndConfirm(org, extracted.phone, customerName);
+    return scheduleAndConfirm(org, extracted.phone, customerName, order);
   }
 
   pendingOwnerStates.set(ownerPhone, {
     state: 'waiting_for_name',
     customerPhone: extracted.phone,
+    order,
     setAt: Date.now(),
   });
   return `✅ זוהה מספר: +${extracted.phone}\nמה שם הלקוח?`;
@@ -110,15 +149,17 @@ async function acceptPhone(
   org: Org,
   ownerPhone: string,
   phone: string,
-  name: string | null
+  name: string | null,
+  order: OrderDetails
 ): Promise<string> {
   if (name) {
     pendingOwnerStates.delete(ownerPhone);
-    return scheduleAndConfirm(org, phone, name);
+    return scheduleAndConfirm(org, phone, name, order);
   }
   pendingOwnerStates.set(ownerPhone, {
     state: 'waiting_for_name',
     customerPhone: phone,
+    order,
     setAt: Date.now(),
   });
   return `✅ מספר: ${formatIsraeliPhone(phone)}\nמה שם הלקוח?`;
@@ -138,12 +179,18 @@ export async function handleOwnerText(org: Org, ownerPhone: string, text: string
   // owner confirms it, or the correction they send replaces it outright.
   if (pending?.state === 'confirming_phone') {
     if (CONFIRM_PATTERN.test(trimmed)) {
-      return acceptPhone(org, ownerPhone, pending.customerPhone, pending.customerName);
+      return acceptPhone(
+        org,
+        ownerPhone,
+        pending.customerPhone,
+        pending.customerName,
+        pending.order
+      );
     }
     const corrected = looksLikePhone(trimmed);
     if (corrected) {
       if (!isReachableOnWhatsApp(corrected)) return UNREACHABLE_REPLY;
-      return acceptPhone(org, ownerPhone, corrected, pending.customerName);
+      return acceptPhone(org, ownerPhone, corrected, pending.customerName, pending.order);
     }
     return `לא הבנתי. אם ${formatIsraeliPhone(pending.customerPhone)} נכון — השב "כן".\nאחרת שלח את המספר הנכון, או "ביטול".`;
   }
@@ -152,7 +199,7 @@ export async function handleOwnerText(org: Org, ownerPhone: string, text: string
     const phone = looksLikePhone(trimmed);
     if (phone) {
       if (!isReachableOnWhatsApp(phone)) return UNREACHABLE_REPLY;
-      return acceptPhone(org, ownerPhone, phone, null);
+      return acceptPhone(org, ownerPhone, phone, null, NO_ORDER);
     }
     if (pending?.state === 'waiting_for_phone') {
       return 'לא זיהיתי מספר טלפון תקין. שלח את המספר בפורמט: 0501234567 (או "ביטול")';
@@ -162,16 +209,45 @@ export async function handleOwnerText(org: Org, ownerPhone: string, text: string
 
   // waiting_for_name
   const customerName = trimmed;
-  const { customerPhone } = pending;
+  const { customerPhone, order } = pending;
   pendingOwnerStates.delete(ownerPhone);
-  return scheduleAndConfirm(org, customerPhone, customerName);
+  return scheduleAndConfirm(org, customerPhone, customerName, order);
 }
 
 // ─── Customer flow ──────────────────────────────────────────────────────────
 
-// Matches both the template button payloads/texts and our interactive re-prompt button ids
-const MANAGER_PATTERNS = /מנהל|לא טוב|תלונ|NEGATIVE|FEEDBACK_MANAGER/i;
-const POSITIVE_PATTERNS = /מעולה|מצוין|מצויין|טוב|נהנ|POSITIVE|FEEDBACK_POSITIVE/i;
+const MISSING = '—';
+
+/**
+ * The alert a manager gets for any rating of 3 or below. Sent the moment the
+ * customer picks a reason rather than waiting for them to type an explanation,
+ * because most press the button and stop there — waiting would mean the
+ * manager never hears about the complaint at all.
+ */
+function managerAlert(org: Org, feedback: Feedback, rating: number, reason: string | null): string {
+  return [
+    `🔴 משוב שלילי — ${org.name}`,
+    '',
+    `שם לקוח: ${feedback.customerName || MISSING}`,
+    `טלפון: ${formatIsraeliPhone(feedback.customerPhone)}`,
+    `מספר הזמנה: ${feedback.orderNumber || MISSING}`,
+    `סכום הזמנה: ${feedback.orderAmount || MISSING}`,
+    `דירוג: ${rating}/5`,
+    `סיבת הבעיה: ${reason || MISSING}`,
+    '',
+    'נדרש טיפול אנושי — צור קשר עם הלקוח.',
+  ].join('\n');
+}
+
+async function askForRating(org: Org, creds: WhatsAppCredentials, to: string): Promise<void> {
+  await sendListMessage(
+    creds,
+    to,
+    `היי 👋 כאן ${restaurantLabel(org)}\nנשמח לדעת איך הייתה ההזמנה שלך היום ❤️\nאיך היית מדרג את ההזמנה?`,
+    'בחירת דירוג',
+    RATING_OPTIONS.map((o) => ({ id: ratingRowId(o.rating), title: o.label }))
+  );
+}
 
 export async function handleCustomerMessage(
   customerPhone: string,
@@ -191,54 +267,69 @@ export async function handleCustomerMessage(
   const org = feedback.org;
   const creds = credentialsFor(org);
 
+  // ── Step 1: the 1-5 rating ──
   if (feedback.conversationState === 'waiting_feedback') {
-    // Order matters: "לא טוב" contains "טוב", so check the manager path first
-    if (MANAGER_PATTERNS.test(payload)) {
-      const customerName = feedback.customerName || `+${customerPhone}`;
-      // Notify the manager immediately — the customer asked to be contacted.
-      // This must not depend on them typing a reason (many press and stop).
-      await sendTextMessage(
-        creds,
-        org.managerPhone,
-        `📞 [${org.name}] הלקוח ${customerName} (+${customerPhone}) ביקש לפנות למנהל.\nאנא צור/צרי איתו קשר. (אם יפרט מה קרה, אשלח לך את הפירוט בהודעה נפרדת.)`
-      );
-      await sendTextMessage(
-        creds,
-        customerPhone,
-        'מצטערים לשמוע 😔 מנהל המסעדה יצור איתך קשר בקרוב.\nבינתיים, נשמח אם תספר לנו מה קרה כדי שנוכל להשתפר:'
-      );
-      await updateFeedback(feedback.id, { conversationState: 'waiting_reason', result: 'manager' });
-    } else if (POSITIVE_PATTERNS.test(payload)) {
+    const rating = parseRating(payload);
+    if (rating === null) {
+      // Anything that isn't one of the five answers — offer them again. This
+      // has to be a list: WhatsApp caps interactive reply buttons at three.
+      await askForRating(org, creds, customerPhone);
+      return;
+    }
+
+    await updateFeedback(feedback.id, {
+      rating,
+      result: rating > NEGATIVE_RATING_MAX ? 'positive' : 'manager',
+    });
+
+    if (rating === 5) {
       await sendTextMessage(
         creds,
         customerPhone,
         `תודה רבה! 🙏 שמחים שנהנית מ${org.name}!\n\nנשמח אם תדרג אותנו בוולט ⭐⭐⭐⭐⭐:\n${org.woltRatingUrl}`
       );
-      await updateFeedback(feedback.id, {
-        status: 'completed',
-        conversationState: 'resolved',
-        result: 'positive',
-      });
-    } else {
-      // Free text that isn't clearly positive/negative — re-prompt with buttons
-      // (allowed: the customer's message opened a 24h session window)
-      await sendReplyButtons(creds, customerPhone, `איך הייתה החוויה שלך מ${org.name}?`, [
-        { id: 'FEEDBACK_POSITIVE', title: 'הייתה מעולה! 😊' },
-        { id: 'FEEDBACK_MANAGER', title: 'אשמח לדבר עם מנהל' },
-      ]);
+      await updateFeedback(feedback.id, { status: 'completed', conversationState: 'resolved' });
+      return;
     }
+
+    if (rating === 4) {
+      // Good but not perfect: worth learning from, not worth alerting anyone.
+      await sendTextMessage(creds, customerPhone, 'מה לדעתך יכול היה להפוך את ההזמנה למושלמת? 😊');
+      await updateFeedback(feedback.id, { conversationState: 'waiting_note' });
+      return;
+    }
+
+    await sendListMessage(
+      creds,
+      customerPhone,
+      'מצטערים לשמוע 🙏\nנשמח להבין מה היה פחות טוב כדי שנוכל להשתפר:',
+      'בחירת סיבה',
+      REASON_OPTIONS.map((o) => ({ id: o.id, title: reasonRowTitle(o, org.greetingEmoji) }))
+    );
+    await updateFeedback(feedback.id, { conversationState: 'waiting_reason' });
     return;
   }
 
+  // ── Step 2 (ratings 1-3): which aspect went wrong ──
   if (feedback.conversationState === 'waiting_reason') {
-    const customerName = feedback.customerName || `+${customerPhone}`;
-    // Follow-up: the manager was already notified on the button press; now
-    // forward the details the customer chose to add.
-    await sendTextMessage(
-      creds,
-      org.managerPhone,
-      `⚠️ [${org.name}] פירוט מהלקוח ${customerName} (+${customerPhone}):\n\n"${payload}"\n\nנדרש טיפול אנושי — צור קשר עם הלקוח.`
-    );
+    const rating = feedback.rating ?? NEGATIVE_RATING_MAX;
+    const reason = parseReason(payload);
+    const reasonLabel = reason ? reason.title : null;
+
+    await updateFeedback(feedback.id, {
+      conversationState: 'waiting_note',
+      ...(reasonLabel ? { reason: reasonLabel } : {}),
+    });
+    await sendTextMessage(creds, org.managerPhone, managerAlert(org, feedback, rating, reasonLabel));
+
+    if (reason) {
+      await sendTextMessage(creds, customerPhone, 'אם תרצה, ספר לנו בקצרה מה קרה.');
+      return;
+    }
+
+    // Someone who types instead of picking has already said what went wrong —
+    // take it as the explanation rather than asking the same question again.
+    await sendTextMessage(creds, org.managerPhone, `📝 [${org.name}] הלקוח הוסיף:\n\n"${payload}"`);
     await sendTextMessage(
       creds,
       customerPhone,
@@ -249,5 +340,39 @@ export async function handleCustomerMessage(
       conversationState: 'resolved',
       complaint: payload,
     });
+    return;
+  }
+
+  // ── Step 3: the optional free-text note ──
+  if (feedback.conversationState === 'waiting_note') {
+    const negative = (feedback.rating ?? 0) <= NEGATIVE_RATING_MAX;
+    await updateFeedback(feedback.id, {
+      status: 'completed',
+      conversationState: 'resolved',
+      complaint: payload,
+    });
+
+    if (negative) {
+      // The manager already has the alert; this is the detail they were told
+      // might follow.
+      await sendTextMessage(
+        creds,
+        org.managerPhone,
+        `📝 [${org.name}] הערה מהלקוח ${feedback.customerName || MISSING} (${formatIsraeliPhone(feedback.customerPhone)}):\n\n"${payload}"`
+      );
+      await sendTextMessage(
+        creds,
+        customerPhone,
+        `תודה על הפירוט 🙏 מנהל ${org.name} יצור איתך קשר בקרוב לטיפול בנושא.`
+      );
+      return;
+    }
+
+    // Rating 4: kept for the restaurant to learn from, no alert by design.
+    await sendTextMessage(
+      creds,
+      customerPhone,
+      'תודה רבה על המשוב! 🙏 נעביר אותו לצוות — בזכות הערות כאלה אנחנו משתפרים.'
+    );
   }
 }

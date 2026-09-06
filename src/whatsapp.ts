@@ -20,6 +20,14 @@ export function credentialsFor(org: Org): WhatsAppCredentials {
   };
 }
 
+/**
+ * How the restaurant introduces itself in the opening message: its name plus
+ * its own emoji, as one template parameter.
+ */
+export function restaurantLabel(org: Org): string {
+  return [org.name, org.greetingEmoji?.trim()].filter(Boolean).join(' ');
+}
+
 const messagesUrl = (phoneNumberId: string) => `${config.graphApiBaseUrl}/${phoneNumberId}/messages`;
 
 function authHeaders(token: string) {
@@ -49,10 +57,32 @@ export async function sendTextMessage(
 }
 
 /**
- * Sends the feedback template (business-initiated, works outside the 24h window).
- * Verified param layout of the approved `restaurant_ranking` template:
- *   header {{1}} = CUSTOMER name  → greeting "<customer> היקר/ה"
- *   body   {{1}} = MANAGER name   → "מדבר <manager> מצוות שירות הלקוחות…"
+ * The template used before the star-rating flow. Kept only as a bridge: it
+ * takes two parameters (customer name in the header, manager name in the body)
+ * where `order_rating` takes one, so an org still pointing at it would fail
+ * outright if handed the new shape. Delete this once every org has moved.
+ */
+const LEGACY_TEMPLATE_NAME = 'restaurant_ranking';
+
+export interface TemplateParams {
+  /** `order_rating`: the restaurant's name and emoji as one value. */
+  restaurantLabel: string;
+  /** Legacy template only. */
+  customerName: string;
+  /** Legacy template only. */
+  managerName: string;
+}
+
+/**
+ * Sends the opening rating request (business-initiated, so it must be an
+ * approved template and works outside the 24h window).
+ *
+ * The approved `order_rating` template carries one body parameter — the
+ * restaurant's name together with its emoji, combined into a single value.
+ * They are deliberately not two parameters: Meta rejects adjacent variables,
+ * and rejects empty parameter values, which a restaurant without an emoji
+ * would produce.
+ *
  * Returns the wamid so button replies can be routed back to the exact
  * feedback row via context.id.
  */
@@ -60,29 +90,23 @@ export async function sendFeedbackTemplate(
   creds: WhatsAppCredentials,
   to: string,
   templateName: string,
-  managerName: string,
-  customerName: string
+  params: TemplateParams
 ): Promise<string | null> {
+  const components =
+    templateName === LEGACY_TEMPLATE_NAME
+      ? [
+          { type: 'header', parameters: [{ type: 'text', text: params.customerName }] },
+          { type: 'body', parameters: [{ type: 'text', text: params.managerName }] },
+        ]
+      : [{ type: 'body', parameters: [{ type: 'text', text: params.restaurantLabel }] }];
+
   const { data } = await axios.post(
     messagesUrl(creds.phoneNumberId),
     {
       messaging_product: 'whatsapp',
       to,
       type: 'template',
-      template: {
-        name: templateName,
-        language: { code: 'he' },
-        components: [
-          {
-            type: 'header',
-            parameters: [{ type: 'text', text: customerName }],
-          },
-          {
-            type: 'body',
-            parameters: [{ type: 'text', text: managerName }],
-          },
-        ],
-      },
+      template: { name: templateName, language: { code: 'he' }, components },
     },
     { headers: authHeaders(creds.token) }
   );
@@ -90,15 +114,19 @@ export async function sendFeedbackTemplate(
 }
 
 /**
- * Sends interactive reply buttons (session message — only valid within the
- * 24h window opened by a customer message). Used to re-prompt customers who
- * answered with free text instead of pressing a button.
+ * Sends an interactive list (session message — only valid within the 24h
+ * window opened by a customer message).
+ *
+ * Used wherever more than three options are offered: reply buttons are capped
+ * at three by WhatsApp, and both the five ratings and the five reasons exceed
+ * that. Unlike template buttons, list rows may contain emoji.
  */
-export async function sendReplyButtons(
+export async function sendListMessage(
   creds: WhatsAppCredentials,
   to: string,
   bodyText: string,
-  buttons: { id: string; title: string }[]
+  buttonLabel: string,
+  rows: { id: string; title: string }[]
 ): Promise<string | null> {
   const { data } = await axios.post(
     messagesUrl(creds.phoneNumberId),
@@ -107,14 +135,9 @@ export async function sendReplyButtons(
       to,
       type: 'interactive',
       interactive: {
-        type: 'button',
+        type: 'list',
         body: { text: bodyText },
-        action: {
-          buttons: buttons.map((b) => ({
-            type: 'reply',
-            reply: { id: b.id, title: b.title },
-          })),
-        },
+        action: { button: buttonLabel, sections: [{ rows }] },
       },
     },
     { headers: authHeaders(creds.token) }

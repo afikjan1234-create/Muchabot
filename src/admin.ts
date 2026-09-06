@@ -80,6 +80,7 @@ adminRouter.post(
         managerName: String(b.managerName ?? ''),
         managerPhone,
         woltRatingUrl: String(b.woltRatingUrl ?? ''),
+        greetingEmoji: String(b.greetingEmoji ?? '').trim(),
         templateName: b.templateName ? String(b.templateName) : undefined,
         feedbackDelayMinutes:
           b.feedbackDelayMinutes !== undefined && b.feedbackDelayMinutes !== ''
@@ -111,6 +112,8 @@ adminRouter.put(
         managerName: b.managerName,
         managerPhone: managerPhone ?? undefined,
         woltRatingUrl: b.woltRatingUrl,
+        greetingEmoji:
+          b.greetingEmoji !== undefined ? String(b.greetingEmoji).trim() : undefined,
         templateName: b.templateName,
         feedbackDelayMinutes:
           b.feedbackDelayMinutes !== undefined ? parseInt(b.feedbackDelayMinutes) : undefined,

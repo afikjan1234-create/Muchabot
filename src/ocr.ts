@@ -6,6 +6,9 @@ import { ocrVariants, ImageVariant } from './image';
 export interface ExtractedCustomer {
   phone: string | null;
   name: string | null;
+  /** Quoted back to the manager on a negative review, so they can pull the order. */
+  orderNumber: string | null;
+  orderAmount: string | null;
   /**
    * 'low' means the details were read but not cleanly enough to act on
    * unattended — the owner is asked to confirm before anything is scheduled.
@@ -136,9 +139,11 @@ const GEMINI_PROMPT = `This image records a delivery/takeaway order from an Isra
 It may be a clean screenshot, or a photo of a screen taken at an angle in poor
 light — blurry, glared, or low resolution. Read it as carefully as you can.
 
-Extract two details about the CUSTOMER who placed the order:
-1. phone — the customer's phone number
-2. name  — the customer's name (usually written in Hebrew)
+Extract these details:
+1. phone  — the CUSTOMER's phone number
+2. name   — the CUSTOMER's name (usually written in Hebrew)
+3. order  — the order/reference number shown on the screen, digits only
+4. amount — the order total, as shown, including its currency symbol
 
 Rules:
 - Israeli mobile numbers are 10 digits starting with 05 (e.g. 052-1234567), or
@@ -152,15 +157,22 @@ Rules:
   returning null and being asked again.
 - The name is the customer's, not the restaurant's, the courier's, or the
   delivery app's.
+- The order number is the order's own identifier, not the table number, not
+  the courier id, and not part of the address.
+- The amount is the total charged, not a line item and not a delivery fee.
 - Set "confident" to true only if every digit of the phone is clearly legible
-  and you are sure the number and name belong to the customer.
+  and you are sure the number and name belong to the customer. The order
+  number and amount do not affect "confident" — return null for either one you
+  cannot read, and the rest of the reading still stands.
 
 Respond with ONLY a JSON object, no markdown fences:
-{"phone": "<digits only, or null>", "name": "<customer name, or null>", "confident": true|false}`;
+{"phone": "<digits only, or null>", "name": "<customer name, or null>", "order": "<order number, or null>", "amount": "<total, or null>", "confident": true|false}`;
 
 interface GeminiReading {
   phone: string | null;
   name: string | null;
+  orderNumber: string | null;
+  orderAmount: string | null;
   confident: boolean;
 }
 
@@ -173,15 +185,19 @@ function parseGeminiReading(raw: string): GeminiReading | null {
 
   try {
     const parsed = JSON.parse(jsonText);
-    const phoneRaw = typeof parsed.phone === 'string' ? parsed.phone.trim() : '';
-    const nameRaw = typeof parsed.name === 'string' ? parsed.name.trim() : '';
-    const phone =
-      phoneRaw && phoneRaw.toLowerCase() !== 'null' ? normalizeIsraeliPhone(phoneRaw) : null;
+    const text = (v: unknown): string | null => {
+      const trimmed = typeof v === 'string' ? v.trim() : typeof v === 'number' ? String(v) : '';
+      return trimmed && trimmed.toLowerCase() !== 'null' ? trimmed : null;
+    };
+    const phoneRaw = text(parsed.phone) ?? '';
+    const phone = phoneRaw ? normalizeIsraeliPhone(phoneRaw) : null;
     return {
       // A landline (or a mangled number) is not something we can message —
       // treat it as "not found" so the owner is asked instead.
       phone: phone && isReachableOnWhatsApp(phone) ? phone : null,
-      name: nameRaw && nameRaw.toLowerCase() !== 'null' ? nameRaw : null,
+      name: text(parsed.name),
+      orderNumber: text(parsed.order),
+      orderAmount: text(parsed.amount),
       confident: parsed.confident === true,
     };
   } catch (err) {
@@ -228,7 +244,13 @@ async function callGemini(
  * across attempts so a phone from one pass can pair with a name from another.
  */
 async function extractWithGemini(variants: ImageVariant[]): Promise<ExtractedCustomer | null> {
-  const best: ExtractedCustomer = { phone: null, name: null, confidence: 'low' };
+  const best: ExtractedCustomer = {
+    phone: null,
+    name: null,
+    orderNumber: null,
+    orderAmount: null,
+    confidence: 'low',
+  };
 
   // Cap the work: enough renditions to rescue a bad photo, few enough that a
   // hopeless image doesn't hold up the owner's reply or burn through quota.
@@ -247,6 +269,8 @@ async function extractWithGemini(variants: ImageVariant[]): Promise<ExtractedCus
       best.confidence = reading.confident ? 'high' : 'low';
     }
     if (reading.name && !best.name) best.name = reading.name;
+    if (reading.orderNumber && !best.orderNumber) best.orderNumber = reading.orderNumber;
+    if (reading.orderAmount && !best.orderAmount) best.orderAmount = reading.orderAmount;
 
     if (best.phone && best.name && best.confidence === 'high') {
       console.log(`[ocr] Gemini read ${best.phone} / ${best.name} from ${variant.name}`);
@@ -291,7 +315,7 @@ export async function extractCustomerFromImage(
   // proof-read something unusable wastes their time — ask them to type it.
   if (!match || !isReachableOnWhatsApp(match.phone)) {
     if (match) console.log(`[ocr] Discarded unreachable Tesseract read: ${match.phone}`);
-    return { phone: null, name: null, confidence: 'low' };
+    return { phone: null, name: null, orderNumber: null, orderAmount: null, confidence: 'low' };
   }
 
   // Tesseract never yields a name, and only a full mobile-shaped match is
@@ -299,6 +323,8 @@ export async function extractCustomerFromImage(
   return {
     phone: match.phone,
     name: null,
+    orderNumber: null,
+    orderAmount: null,
     confidence: match.strict && isMobileNumber(match.phone) ? 'high' : 'low',
   };
 }

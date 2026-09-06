@@ -55,7 +55,10 @@ async function processMessage(message: any): Promise<void> {
       // (an owner testing the flow on their own number), the next text is
       // the complaint — not an owner command.
       const asCustomer = await getActiveFeedbackByPhone(from);
-      if (asCustomer?.conversationState === 'waiting_reason') {
+      if (
+        asCustomer?.conversationState === 'waiting_reason' ||
+        asCustomer?.conversationState === 'waiting_note'
+      ) {
         await handleCustomerMessage(from, message.text.body, null);
         return;
       }

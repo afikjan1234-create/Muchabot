@@ -1,5 +1,5 @@
 import { claimDueFeedbacks, resetStuckSending, updateFeedback } from './db';
-import { sendFeedbackTemplate, sendTextMessage, credentialsFor } from './whatsapp';
+import { sendFeedbackTemplate, sendTextMessage, credentialsFor, restaurantLabel } from './whatsapp';
 import { config } from './config';
 import { Feedback } from './types';
 
@@ -11,8 +11,11 @@ async function sendOne(feedback: Feedback): Promise<void> {
       creds,
       feedback.customerPhone,
       org.templateName,
-      org.managerName,
-      feedback.customerName
+      {
+        restaurantLabel: restaurantLabel(org),
+        customerName: feedback.customerName,
+        managerName: org.managerName,
+      }
     );
     await updateFeedback(feedback.id, {
       status: 'sent',

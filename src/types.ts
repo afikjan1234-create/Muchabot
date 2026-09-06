@@ -17,6 +17,12 @@ export interface Org {
   whatsappPhoneNumberId: string | null;
   /** Only needed if the dedicated number lives under a different Meta Business Manager. */
   whatsappToken: string | null;
+  /**
+   * Shown beside the restaurant's name in the opening message, and on the
+   * "food" row of the reason list. One bot serves sushi bars and pizzerias,
+   * so the icon cannot be hardcoded. Empty means no icon.
+   */
+  greetingEmoji: string;
 }
 
 export interface WhatsAppCredentials {
@@ -30,7 +36,12 @@ export interface OrgPhone {
 }
 
 export type FeedbackStatus = 'pending' | 'sending' | 'sent' | 'completed' | 'error' | 'cancelled';
-export type ConversationState = 'waiting_feedback' | 'waiting_reason' | 'resolved' | null;
+export type ConversationState =
+  | 'waiting_feedback'
+  | 'waiting_reason'
+  | 'waiting_note'
+  | 'resolved'
+  | null;
 
 export interface Feedback {
   id: number;
@@ -46,5 +57,12 @@ export interface Feedback {
   complaint: string | null;
   errorDetail: string | null;
   createdAt: string;
+  /** 1-5, once the customer has answered. */
+  rating: number | null;
+  /** Which aspect went wrong, for ratings of 3 or below. */
+  reason: string | null;
+  /** Read off the order screenshot; the manager alert quotes both. */
+  orderNumber: string | null;
+  orderAmount: string | null;
   org?: Org;
 }

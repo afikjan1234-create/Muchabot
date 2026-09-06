@@ -42,6 +42,7 @@ function toOrg(row: Record<string, any>): Org {
     plan: row.plan ?? 'shared',
     whatsappPhoneNumberId: row.whatsapp_phone_number_id ?? null,
     whatsappToken: row.whatsapp_token ?? null,
+    greetingEmoji: row.greeting_emoji ?? '',
   };
 }
 
@@ -60,6 +61,10 @@ function toFeedback(row: Record<string, any>): Feedback {
     complaint: row.complaint,
     errorDetail: row.error_detail,
     createdAt: row.created_at,
+    rating: row.rating ?? null,
+    reason: row.reason ?? null,
+    orderNumber: row.order_number ?? null,
+    orderAmount: row.order_amount ?? null,
     org: row.orgs ? toOrg(row.orgs) : undefined,
   };
 }
@@ -112,6 +117,7 @@ export interface OrgInput {
   plan?: OrgPlan;
   whatsappPhoneNumberId?: string | null;
   whatsappToken?: string | null;
+  greetingEmoji?: string;
 }
 
 function orgInputToRow(input: Partial<OrgInput>): Record<string, unknown> {
@@ -126,6 +132,7 @@ function orgInputToRow(input: Partial<OrgInput>): Record<string, unknown> {
   if (input.plan !== undefined) row.plan = input.plan;
   if (input.whatsappPhoneNumberId !== undefined) row.whatsapp_phone_number_id = input.whatsappPhoneNumberId;
   if (input.whatsappToken !== undefined) row.whatsapp_token = input.whatsappToken;
+  if (input.greetingEmoji !== undefined) row.greeting_emoji = input.greetingEmoji;
   return row;
 }
 
@@ -171,7 +178,8 @@ export async function createFeedback(
   orgId: string,
   customerPhone: string,
   customerName: string,
-  scheduledAt: Date
+  scheduledAt: Date,
+  order: { orderNumber?: string | null; orderAmount?: string | null } = {}
 ): Promise<Feedback> {
   const { data, error } = await supabase
     .from('feedbacks')
@@ -180,6 +188,8 @@ export async function createFeedback(
       customer_phone: customerPhone,
       customer_name: customerName,
       scheduled_at: scheduledAt.toISOString(),
+      order_number: order.orderNumber ?? null,
+      order_amount: order.orderAmount ?? null,
     })
     .select('*, orgs(*)')
     .single();
@@ -247,6 +257,8 @@ export async function updateFeedback(
     result?: 'positive' | 'manager';
     complaint?: string;
     errorDetail?: string;
+    rating?: number;
+    reason?: string;
   }
 ): Promise<void> {
   const row: Record<string, unknown> = {};
@@ -257,6 +269,8 @@ export async function updateFeedback(
   if (fields.result !== undefined) row.result = fields.result;
   if (fields.complaint !== undefined) row.complaint = fields.complaint;
   if (fields.errorDetail !== undefined) row.error_detail = fields.errorDetail;
+  if (fields.rating !== undefined) row.rating = fields.rating;
+  if (fields.reason !== undefined) row.reason = fields.reason;
   const { error } = await supabase.from('feedbacks').update(row).eq('id', id);
   if (error) fail('updateFeedback', error);
 }

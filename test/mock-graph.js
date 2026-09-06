@@ -16,7 +16,14 @@ function start(port) {
     let summary = '';
     if (b.type === 'text') summary = b.text?.body ?? '';
     else if (b.type === 'template') summary = `template:${b.template?.name} params:${JSON.stringify(b.template?.components)}`;
-    else if (b.type === 'interactive') summary = `buttons:${JSON.stringify(b.interactive?.action?.buttons?.map((x) => x.reply))} body:${b.interactive?.body?.text}`;
+    else if (b.type === 'interactive') {
+      const act = b.interactive?.action;
+      const rows = act?.sections?.flatMap((sec) => sec.rows ?? []);
+      const choices = rows
+        ? rows.map((r) => ({ id: r.id, title: r.title }))
+        : act?.buttons?.map((x) => x.reply);
+      summary = `${b.interactive?.type}:${JSON.stringify(choices)} body:${b.interactive?.body?.text}`;
+    }
     const wamid = `wamid.MOCK${++wamidCounter}`;
     sent.push({ to: b.to, type: b.type, summary, wamid, raw: b, phoneId: req.params.phoneId });
     console.log(`[mock] (phone ${req.params.phoneId}) → ${b.to} [${b.type}] ${summary.slice(0, 90)}`);
