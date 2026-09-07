@@ -43,6 +43,7 @@ function toOrg(row: Record<string, any>): Org {
     whatsappPhoneNumberId: row.whatsapp_phone_number_id ?? null,
     whatsappToken: row.whatsapp_token ?? null,
     greetingEmoji: row.greeting_emoji ?? '',
+    closingTime: row.closing_time ?? '22:00',
   };
 }
 
@@ -118,6 +119,7 @@ export interface OrgInput {
   whatsappPhoneNumberId?: string | null;
   whatsappToken?: string | null;
   greetingEmoji?: string;
+  closingTime?: string;
 }
 
 function orgInputToRow(input: Partial<OrgInput>): Record<string, unknown> {
@@ -133,6 +135,7 @@ function orgInputToRow(input: Partial<OrgInput>): Record<string, unknown> {
   if (input.whatsappPhoneNumberId !== undefined) row.whatsapp_phone_number_id = input.whatsappPhoneNumberId;
   if (input.whatsappToken !== undefined) row.whatsapp_token = input.whatsappToken;
   if (input.greetingEmoji !== undefined) row.greeting_emoji = input.greetingEmoji;
+  if (input.closingTime !== undefined) row.closing_time = input.closingTime;
   return row;
 }
 
@@ -327,4 +330,58 @@ export async function getOrgStats(): Promise<OrgStats[]> {
     managerRequests: row.manager_requests,
     errors: row.errors,
   }));
+}
+
+// ─── Reports ────────────────────────────────────────────────────────────────
+
+/**
+ * Feedbacks the bot actually sent within a local date range. The window is
+ * resolved in Postgres against Asia/Jerusalem so a "day" means the
+ * restaurant's day, which JS date arithmetic gets wrong around DST.
+ */
+export async function getReportFeedbacks(
+  orgId: string,
+  from: string,
+  to: string
+): Promise<Feedback[]> {
+  const { data, error } = await supabase.rpc('report_feedbacks', {
+    p_org_id: orgId,
+    p_from: from,
+    p_to: to,
+  });
+  if (error) fail('getReportFeedbacks', error);
+  return (data ?? []).map(toFeedback);
+}
+
+/**
+ * Claims the right to send one report, by inserting its row up front. The
+ * unique index is the lock: a restart mid-send, or two overlapping polls,
+ * cannot produce a duplicate report. Returns false when it was already sent.
+ */
+export async function claimReportRun(
+  orgId: string,
+  period: string,
+  periodEnd: string
+): Promise<boolean> {
+  const { error } = await supabase
+    .from('report_runs')
+    .insert({ org_id: orgId, period, period_end: periodEnd });
+  if (!error) return true;
+  if ((error as { code?: string }).code === '23505') return false; // already claimed
+  fail('claimReportRun', error);
+}
+
+/** Gives the claim back so a failed send is retried on the next poll. */
+export async function releaseReportRun(
+  orgId: string,
+  period: string,
+  periodEnd: string
+): Promise<void> {
+  const { error } = await supabase
+    .from('report_runs')
+    .delete()
+    .eq('org_id', orgId)
+    .eq('period', period)
+    .eq('period_end', periodEnd);
+  if (error) console.error('[db] releaseReportRun failed:', error.message);
 }

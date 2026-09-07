@@ -26,6 +26,17 @@ export const RATING_OPTIONS: RatingOption[] = [
 export const ratingRowId = (rating: number): string => `RATING_${rating}`;
 
 /**
+ * The two buttons on the retired `restaurant_ranking` template.
+ *
+ * Transitional: orgs stay on that template until Meta approves `order_rating`,
+ * and without these a customer pressing one of its buttons falls through to
+ * the "I didn't understand" path and receives a second, redundant message.
+ * Delete both once no org points at the legacy template.
+ */
+export const LEGACY_POSITIVE_BUTTON = 'הכל היה מעולה';
+export const LEGACY_MANAGER_BUTTON = 'אני מעוניין לפנות למנהל';
+
+/**
  * Recovers the score from whatever the webhook delivered: the row id when the
  * customer used the re-prompt list, or the button's own label when they
  * answered the template itself.
@@ -38,6 +49,11 @@ export function parseRating(payload: string): number | null {
 
   const exact = RATING_OPTIONS.find((o) => o.label === text);
   if (exact) return exact.rating;
+
+  // "Everything was excellent" on the legacy template means the same as the
+  // top of the new scale. Its other button is a request, not a score, and is
+  // handled separately so no rating is invented for it.
+  if (text.includes(LEGACY_POSITIVE_BUTTON)) return 5;
 
   // Longest label first, so a shorter label that happens to sit inside a
   // longer one can never claim the match.

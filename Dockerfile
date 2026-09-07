@@ -17,5 +17,7 @@ COPY --from=build /app/dist ./dist
 COPY public ./public
 # Tesseract language data (so OCR works without a cold-start CDN download)
 COPY eng.traineddata ./eng.traineddata
+# Hebrew font for the PDF reports: pdfkit embeds it, no system font exists
+COPY assets ./assets
 EXPOSE 3000
 CMD ["node", "dist/index.js"]

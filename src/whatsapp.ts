@@ -145,6 +145,51 @@ export async function sendListMessage(
   return data?.messages?.[0]?.id ?? null;
 }
 
+/**
+ * Uploads a file to WhatsApp and returns its media id.
+ *
+ * Reports go out as uploaded media rather than a public link: they list
+ * customers by name, phone and complaint, and a link would put that behind
+ * nothing but a hard-to-guess URL.
+ */
+export async function uploadMedia(
+  creds: WhatsAppCredentials,
+  file: Buffer,
+  filename: string,
+  mimeType: string
+): Promise<string> {
+  const form = new FormData();
+  form.append('messaging_product', 'whatsapp');
+  form.append('type', mimeType);
+  form.append('file', new Blob([new Uint8Array(file)], { type: mimeType }), filename);
+
+  const { data } = await axios.post(`${config.graphApiBaseUrl}/${creds.phoneNumberId}/media`, form, {
+    headers: { Authorization: `Bearer ${creds.token}` },
+  });
+  return data.id;
+}
+
+/** Sends an already-uploaded document. Session message: needs an open 24h window. */
+export async function sendDocument(
+  creds: WhatsAppCredentials,
+  to: string,
+  mediaId: string,
+  filename: string,
+  caption: string
+): Promise<string | null> {
+  const { data } = await axios.post(
+    messagesUrl(creds.phoneNumberId),
+    {
+      messaging_product: 'whatsapp',
+      to,
+      type: 'document',
+      document: { id: mediaId, filename, caption },
+    },
+    { headers: authHeaders(creds.token) }
+  );
+  return data?.messages?.[0]?.id ?? null;
+}
+
 export async function downloadMedia(
   creds: WhatsAppCredentials,
   mediaId: string

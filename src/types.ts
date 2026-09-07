@@ -23,6 +23,11 @@ export interface Org {
    * so the icon cannot be hardcoded. Empty means no icon.
    */
   greetingEmoji: string;
+  /**
+   * When the restaurant shuts for the day, as local 'HH:MM' wall-clock time
+   * in Asia/Jerusalem. Periodic reports go out at this hour.
+   */
+  closingTime: string;
 }
 
 export interface WhatsAppCredentials {

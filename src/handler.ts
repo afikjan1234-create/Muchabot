@@ -18,6 +18,7 @@ import {
   looksLikePhone,
 } from './ocr';
 import {
+  LEGACY_MANAGER_BUTTON,
   NEGATIVE_RATING_MAX,
   RATING_OPTIONS,
   REASON_OPTIONS,
@@ -224,7 +225,12 @@ const MISSING = '—';
  * because most press the button and stop there — waiting would mean the
  * manager never hears about the complaint at all.
  */
-function managerAlert(org: Org, feedback: Feedback, rating: number, reason: string | null): string {
+function managerAlert(
+  org: Org,
+  feedback: Feedback,
+  rating: number | null,
+  reason: string | null
+): string {
   return [
     `🔴 משוב שלילי — ${org.name}`,
     '',
@@ -232,11 +238,21 @@ function managerAlert(org: Org, feedback: Feedback, rating: number, reason: stri
     `טלפון: ${formatIsraeliPhone(feedback.customerPhone)}`,
     `מספר הזמנה: ${feedback.orderNumber || MISSING}`,
     `סכום הזמנה: ${feedback.orderAmount || MISSING}`,
-    `דירוג: ${rating}/5`,
+    `דירוג: ${rating ? `${rating}/5` : MISSING}`,
     `סיבת הבעיה: ${reason || MISSING}`,
     '',
     'נדרש טיפול אנושי — צור קשר עם הלקוח.',
   ].join('\n');
+}
+
+async function askForReason(org: Org, creds: WhatsAppCredentials, to: string): Promise<void> {
+  await sendListMessage(
+    creds,
+    to,
+    'מצטערים לשמוע 🙏\nנשמח להבין מה היה פחות טוב כדי שנוכל להשתפר:',
+    'בחירת סיבה',
+    REASON_OPTIONS.map((o) => ({ id: o.id, title: reasonRowTitle(o, org.greetingEmoji) }))
+  );
 }
 
 async function askForRating(org: Org, creds: WhatsAppCredentials, to: string): Promise<void> {
@@ -270,6 +286,16 @@ export async function handleCustomerMessage(
   // ── Step 1: the 1-5 rating ──
   if (feedback.conversationState === 'waiting_feedback') {
     const rating = parseRating(payload);
+
+    // Legacy template only: "I'd like to speak to a manager" is a request
+    // rather than a score, so it goes to the reason list with no rating set.
+    if (rating === null && payload.includes(LEGACY_MANAGER_BUTTON)) {
+      await updateFeedback(feedback.id, { result: 'manager' });
+      await askForReason(org, creds, customerPhone);
+      await updateFeedback(feedback.id, { conversationState: 'waiting_reason' });
+      return;
+    }
+
     if (rating === null) {
       // Anything that isn't one of the five answers — offer them again. This
       // has to be a list: WhatsApp caps interactive reply buttons at three.
@@ -299,20 +325,14 @@ export async function handleCustomerMessage(
       return;
     }
 
-    await sendListMessage(
-      creds,
-      customerPhone,
-      'מצטערים לשמוע 🙏\nנשמח להבין מה היה פחות טוב כדי שנוכל להשתפר:',
-      'בחירת סיבה',
-      REASON_OPTIONS.map((o) => ({ id: o.id, title: reasonRowTitle(o, org.greetingEmoji) }))
-    );
+    await askForReason(org, creds, customerPhone);
     await updateFeedback(feedback.id, { conversationState: 'waiting_reason' });
     return;
   }
 
   // ── Step 2 (ratings 1-3): which aspect went wrong ──
   if (feedback.conversationState === 'waiting_reason') {
-    const rating = feedback.rating ?? NEGATIVE_RATING_MAX;
+    const rating = feedback.rating;
     const reason = parseReason(payload);
     const reasonLabel = reason ? reason.title : null;
 

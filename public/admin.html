@@ -144,6 +144,7 @@
     </div>
     <div class="field"><label>קישור דירוג בוולט</label><input id="orgWolt" placeholder="https://wolt.com/..." style="direction:ltr;text-align:right"></div>
     <div class="field"><label>אימוג'י המסעדה</label><input id="orgEmoji" placeholder="למשל: 🍣" maxlength="8"><small>מופיע ליד שם המסעדה בהודעה הפותחת וברשימת הסיבות</small></div>
+    <div class="field"><label>שעת סגירה</label><input id="orgClosing" type="time" value="22:00"><small>הדוחות (יומי/שבועי/חודשי) נשלחים למנהל בשעה זו</small></div>
     <div class="row2">
       <div class="field"><label>השהיה לפני שליחה (דקות)</label><input id="orgDelay" type="number" value="60" min="0"></div>
       <div class="field"><label>שם תבנית WhatsApp</label><input id="orgTemplate" placeholder="order_rating" style="direction:ltr;text-align:right"></div>
@@ -269,7 +270,10 @@ async function loadOrgs() {
         <td dir="ltr">${esc(o.templateName)}</td>
         <td><span class="badge ${o.plan === 'dedicated' ? 'b-dedicated' : 'b-shared'}">${o.plan === 'dedicated' ? 'ייעודי' : 'משותף'}</span></td>
         <td><span class="badge ${o.isActive ? 'b-active' : 'b-inactive'}">${o.isActive ? 'פעילה' : 'מושבתת'}</span></td>
-        <td><button class="btn-ghost btn-sm" onclick="openOrgModal('${o.id}')">עריכה</button></td>
+        <td>
+          <button class="btn-ghost btn-sm" onclick="openOrgModal('${o.id}')">עריכה</button>
+          <button class="btn-ghost btn-sm" onclick="sendReportNow('${o.id}')">דוח עכשיו</button>
+        </td>
       </tr>`).join('');
   }
   // fill filter + manual-send selects
@@ -278,6 +282,24 @@ async function loadOrgs() {
   $('filterOrg').innerHTML = '<option value="">כל המסעדות</option>' + opts;
   $('filterOrg').value = cur;
   $('fbOrg').innerHTML = opts;
+}
+
+// Sends the closing-time report immediately, for previewing it without
+// waiting for the restaurant to close.
+async function sendReportNow(orgId) {
+  const period = prompt('איזה דוח לשלוח למנהל עכשיו? הקלד: daily / weekly / monthly', 'daily');
+  if (!period) return;
+  try {
+    const r = await api(`/orgs/${orgId}/report`, {
+      method: 'POST',
+      body: JSON.stringify({ period }),
+    });
+    alert(r.result === 'sent'
+      ? `הדוח נשלח למנהל (${r.from} - ${r.to})`
+      : `לא נשלח: ${r.result}`);
+  } catch (e) {
+    alert('שליחת הדוח נכשלה: ' + e.message);
+  }
 }
 
 function esc(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
@@ -303,6 +325,7 @@ function openOrgModal(id) {
   $('orgWolt').value = org?.woltRatingUrl || '';
   $('orgDelay').value = org?.feedbackDelayMinutes ?? 60;
   $('orgEmoji').value = org?.greetingEmoji || '';
+  $('orgClosing').value = org?.closingTime || '22:00';
   $('orgTemplate').value = org?.templateName || 'order_rating';
   $('orgActive').value = String(org?.isActive ?? true);
   $('activeField').style.display = org ? 'block' : 'none';
@@ -332,6 +355,7 @@ async function saveOrg() {
     woltRatingUrl: $('orgWolt').value.trim(),
     feedbackDelayMinutes: $('orgDelay').value,
     greetingEmoji: $('orgEmoji').value.trim(),
+    closingTime: $('orgClosing').value.trim() || '22:00',
     templateName: $('orgTemplate').value.trim() || 'order_rating',
     isActive: $('orgActive').value === 'true',
     phones,

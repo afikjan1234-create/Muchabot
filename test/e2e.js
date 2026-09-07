@@ -102,6 +102,7 @@ async function main() {
       feedbackDelayMinutes: 0,
       templateName: 'order_rating',
       greetingEmoji: '🍣',
+      closingTime: '23:59',
       phones: [{ phone: '0500000001', label: 'בעלים' }],
     });
     check('Admin API creates org (phone normalized)', org.id && org.phones?.[0]?.phone === OWNER);
@@ -316,6 +317,32 @@ async function main() {
       templateE?.phoneId && templateE.phoneId !== 'DEDICATED_PHONE_999', `phoneId=${templateE?.phoneId}`);
 
     await api('delete', `/orgs/${dedicatedOrg.id}`);
+
+    // ── Scenario J: the closing-time PDF report ──
+    mock.sent.length = 0;
+    const before = mock.uploads.length;
+    const report = await api('post', `/orgs/${org.id}/report`, { period: 'daily' });
+    check('Report endpoint reports success', report.result === 'sent', JSON.stringify(report));
+    check('Report PDF was uploaded to WhatsApp', mock.uploads.length === before + 1);
+    check('Uploaded PDF is a real, non-trivial document',
+      (mock.uploads[mock.uploads.length - 1]?.bytes ?? 0) > 2000,
+      `bytes=${mock.uploads[mock.uploads.length - 1]?.bytes}`);
+
+    const doc = await waitFor(async () =>
+      mock.sent.find((m) => m.type === 'document' && m.to === '972500000002'));
+    check('Report delivered to the manager as a document', !!doc, doc && doc.summary);
+    check('Report filename names the period and date',
+      !!doc && /report-daily-\d{4}-\d{2}-\d{2}\.pdf/.test(doc.raw?.document?.filename ?? ''),
+      doc?.raw?.document?.filename);
+    check('Report caption names the restaurant',
+      !!doc && doc.raw?.document?.caption?.includes('מסעדת בדיקה'));
+
+    // A weekly range must be accepted and labelled as such.
+    const weekly = await api('post', `/orgs/${org.id}/report`, { period: 'weekly' });
+    check('Weekly report also sends', weekly.result === 'sent', JSON.stringify(weekly));
+    const weeklyDoc = await waitFor(async () =>
+      mock.sent.find((m) => m.type === 'document' && (m.raw?.document?.filename ?? '').includes('weekly')));
+    check('Weekly report filename marked weekly', !!weeklyDoc, weeklyDoc?.raw?.document?.filename);
 
     // ── Stats ──
     const stats = await api('get', '/stats');

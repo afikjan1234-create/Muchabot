@@ -16,6 +16,7 @@ function start(port) {
     let summary = '';
     if (b.type === 'text') summary = b.text?.body ?? '';
     else if (b.type === 'template') summary = `template:${b.template?.name} params:${JSON.stringify(b.template?.components)}`;
+    else if (b.type === 'document') summary = `document:${b.document?.filename} caption:${b.document?.caption}`;
     else if (b.type === 'interactive') {
       const act = b.interactive?.action;
       const rows = act?.sections?.flatMap((sec) => sec.rows ?? []);
@@ -30,6 +31,19 @@ function start(port) {
     res.json({ messaging_product: 'whatsapp', messages: [{ id: wamid }] });
   });
 
+  // Media upload (report PDFs). Multipart body is irrelevant to the assertions,
+  // so it is accepted wholesale and answered with a fixed id.
+  const uploads = [];
+  app.post('/v19.0/:phoneId/media', (req, res) => {
+    let bytes = 0;
+    req.on('data', (c) => (bytes += c.length));
+    req.on('end', () => {
+      uploads.push({ phoneId: req.params.phoneId, bytes });
+      console.log(`[mock] media upload (${bytes} bytes)`);
+      res.json({ id: `MEDIA_UPLOAD_${uploads.length}` });
+    });
+  });
+
   // Media metadata + binary (owner order screenshot)
   app.get('/media/test.png', (_req, res) => {
     res.type('image/png').send(fs.readFileSync(path.join(__dirname, 'fixtures', 'test.png')));
@@ -39,7 +53,7 @@ function start(port) {
   });
 
   const server = app.listen(port);
-  return { sent, server };
+  return { sent, uploads, server };
 }
 
 module.exports = { start };

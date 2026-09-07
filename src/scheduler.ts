@@ -2,6 +2,7 @@ import { claimDueFeedbacks, resetStuckSending, updateFeedback } from './db';
 import { sendFeedbackTemplate, sendTextMessage, credentialsFor, restaurantLabel } from './whatsapp';
 import { config } from './config';
 import { Feedback } from './types';
+import { checkReports } from './report-scheduler';
 
 async function sendOne(feedback: Feedback): Promise<void> {
   const org = feedback.org!;
@@ -56,6 +57,9 @@ export async function pollOnce(): Promise<void> {
       }
       await sendOne(feedback);
     }
+    // Closing-time reports ride the same tick; each is claimed once, so
+    // polling every 20 seconds costs one cheap check per org.
+    await checkReports();
   } catch (err) {
     console.error('[scheduler] Poll failed:', err);
   } finally {

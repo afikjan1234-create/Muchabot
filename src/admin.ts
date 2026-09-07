@@ -13,6 +13,9 @@ import {
 } from './db';
 import { looksLikePhone } from './ocr';
 import { FeedbackStatus, OrgPhone, OrgPlan } from './types';
+import { sendReport } from './report-scheduler';
+import { ReportPeriod } from './report';
+import { localNow } from './report-scheduler';
 
 function parsePlan(raw: unknown): OrgPlan | undefined {
   if (raw === undefined) return undefined;
@@ -81,6 +84,7 @@ adminRouter.post(
         managerPhone,
         woltRatingUrl: String(b.woltRatingUrl ?? ''),
         greetingEmoji: String(b.greetingEmoji ?? '').trim(),
+        closingTime: b.closingTime ? String(b.closingTime).trim() : undefined,
         templateName: b.templateName ? String(b.templateName) : undefined,
         feedbackDelayMinutes:
           b.feedbackDelayMinutes !== undefined && b.feedbackDelayMinutes !== ''
@@ -93,6 +97,30 @@ adminRouter.post(
       parsePhones(b.phones)
     );
     res.json(org);
+  })
+);
+
+/**
+ * Sends a report now, regardless of closing time or whether today's already
+ * went out — the dashboard's "send me this" button, and how the E2E suite
+ * exercises delivery without waiting for a clock.
+ */
+adminRouter.post(
+  '/orgs/:id/report',
+  handle(async (req, res) => {
+    const org = await getOrgById(req.params.id);
+    if (!org) throw new Error('מסעדה לא נמצאה');
+
+    const period = (req.body?.period ?? 'daily') as ReportPeriod;
+    if (!['daily', 'weekly', 'monthly'].includes(period)) {
+      throw new Error(`תקופה לא תקינה: ${period}`);
+    }
+    const today = localNow().date;
+    const to = String(req.body?.to ?? today);
+    const from = String(req.body?.from ?? to);
+
+    const result = await sendReport(org, period, from, to, { force: true });
+    res.json({ result, period, from, to });
   })
 );
 
@@ -114,6 +142,7 @@ adminRouter.put(
         woltRatingUrl: b.woltRatingUrl,
         greetingEmoji:
           b.greetingEmoji !== undefined ? String(b.greetingEmoji).trim() : undefined,
+        closingTime: b.closingTime !== undefined ? String(b.closingTime).trim() : undefined,
         templateName: b.templateName,
         feedbackDelayMinutes:
           b.feedbackDelayMinutes !== undefined ? parseInt(b.feedbackDelayMinutes) : undefined,
