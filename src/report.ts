@@ -6,32 +6,52 @@ import { formatIsraeliPhone } from './ocr';
 /**
  * Periodic PDF reports for restaurant managers.
  *
- * Two things about Hebrew in pdfkit shaped this file:
+ * Hebrew in pdfkit needs `heb()` on every string. fontkit reverses the letters
+ * inside each word but leaves the words in the order given, so a logical
+ * Hebrew sentence prints with its words backwards — "דוח יומי" reads as
+ * "יומי דוח". Reversing the word order before drawing cancels that out.
  *
- * 1. No manual bidi. pdfkit lays out RTL scripts through fontkit already, so
- *    a logical Hebrew string draws correctly as-is. Reordering it first (with
- *    the Unicode bidi algorithm, say) double-reverses it into gibberish.
- * 2. Hebrew and digits never share one draw call. Where an RTL run meets
- *    digits, fontkit swallows the space between them and glues them together
- *    ("15ללקוחות"). Directional marks — LRM, RLM, NBSP — do not fix it, so
- *    every label and its value are positioned as separate pieces instead.
- * 3. Every Hebrew string is drawn with a trailing space, via `pad()` below.
+ * It also swallows one space per right-to-left line, welding the last two
+ * words together, so a trailing space is added for it to eat. Both were
+ * confirmed by extracting glyph x-positions from the rendered PDF; NBSP and
+ * the LRM/RLM marks do not help, and running the full Unicode bidi algorithm
+ * makes things worse by reversing the letters a second time.
+ *
+ * Hebrew and digits still never share one draw call: where an RTL run meets
+ * digits the space between them disappears ("15ללקוחות"), so labels and their
+ * values are positioned as separate pieces.
  */
 
 const HEBREW = /[֐-׿]/;
 
 /**
- * pdfkit drops exactly one space per right-to-left line — the one that ends up
- * leftmost — welding the last two words together ("פילוחדירוגים"). A trailing
- * space is eaten in its place and the real ones survive.
- *
- * Checked against pdfkit's actual output: non-breaking spaces also close the
- * gap but reverse the word order, and LRM/RLM marks change nothing. Latin and
- * numeric cells are left alone, where a trailing space would just shift a
- * right-aligned value off the margin.
+ * Prepares a Hebrew string for drawing: words reversed, one trailing space.
+ * Latin and numeric strings pass through untouched — reversing them would
+ * scramble a phone number, and padding would shift it off the right margin.
  */
-function pad(text: string): string {
-  return HEBREW.test(text) ? `${text} ` : text;
+function heb(text: string): string {
+  if (!HEBREW.test(text)) return text;
+  return `${text.split(' ').reverse().join(' ')} `;
+}
+
+/**
+ * Wraps on the LOGICAL string, then reverses each resulting line separately.
+ * Reversing first and letting pdfkit wrap would put the closing words on the
+ * first line.
+ */
+function wrapHebrew(doc: Doc, text: string, width: number): string[] {
+  const lines: string[] = [];
+  let current = '';
+  for (const word of text.split(/\s+/)) {
+    const candidate = current ? `${current} ${word}` : word;
+    if (!current || doc.widthOfString(candidate) <= width) current = candidate;
+    else {
+      lines.push(current);
+      current = word;
+    }
+  }
+  if (current) lines.push(current);
+  return lines.length ? lines : [''];
 }
 
 const FONT_DIR = path.join(process.cwd(), 'assets');
@@ -137,7 +157,7 @@ function use(doc: Doc, opts: TextOpts): number {
 /** One right-aligned line. Must be a single script — Hebrew or digits, not both. */
 function line(doc: Doc, text: string, y: number, opts: TextOpts = {}): number {
   const size = use(doc, opts);
-  doc.text(pad(text), PAGE_MARGIN, y, { width: CONTENT_WIDTH, align: 'right', lineBreak: false });
+  doc.text(heb(text), PAGE_MARGIN, y, { width: CONTENT_WIDTH, align: 'right', lineBreak: false });
   return y + size * 1.55;
 }
 
@@ -149,7 +169,7 @@ function labelValue(doc: Doc, label: string, value: string, y: number, opts: Tex
   const size = use(doc, opts);
   // Measured unpadded so the label still sits flush to the right margin.
   const labelWidth = doc.widthOfString(label);
-  doc.text(pad(label), RIGHT_EDGE - labelWidth, y, { lineBreak: false });
+  doc.text(heb(label), RIGHT_EDGE - labelWidth, y, { lineBreak: false });
 
   const valueWidth = doc.widthOfString(value);
   doc.text(value, RIGHT_EDGE - labelWidth - 7 - valueWidth, y, { lineBreak: false });
@@ -208,7 +228,7 @@ function tableHeader(doc: Doc, columns: Column[], y: number): number {
   use(doc, { size: 9.5, bold: true, color: MUTED });
   for (const col of columns) {
     x -= col.width;
-    doc.text(pad(col.title), x, y, { width: col.width - 6, align: 'right', lineBreak: false });
+    doc.text(heb(col.title), x, y, { width: col.width - 6, align: 'right', lineBreak: false });
   }
   ruleAt(doc, y + 13);
   return y + 19;
@@ -219,21 +239,31 @@ function tableRow(doc: Doc, columns: Column[], values: string[], y: number): num
   const wrapIndex = columns.findIndex((c) => c.wrap);
 
   use(doc, { size });
+  let wrapped: string[] = [];
   let height = size * 1.5;
   if (wrapIndex >= 0) {
-    const w = columns[wrapIndex].width - 8;
-    height = Math.max(height, doc.heightOfString(pad(values[wrapIndex] || '-'), { width: w }) + 3);
+    wrapped = wrapHebrew(doc, values[wrapIndex] || '-', columns[wrapIndex].width - 8);
+    height = Math.max(height, wrapped.length * size * 1.4 + 2);
   }
 
   let x = RIGHT_EDGE;
   columns.forEach((col, i) => {
     x -= col.width;
     use(doc, { size });
-    const value = pad(values[i] || '-');
     if (i === wrapIndex) {
-      doc.text(value, x, y, { width: col.width - 8, align: 'right' });
+      wrapped.forEach((l, n) => {
+        doc.text(heb(l), x, y + n * size * 1.4, {
+          width: col.width - 8,
+          align: 'right',
+          lineBreak: false,
+        });
+      });
     } else {
-      doc.text(value, x, y, { width: col.width - 6, align: 'right', lineBreak: false });
+      doc.text(heb(values[i] || '-'), x, y, {
+        width: col.width - 6,
+        align: 'right',
+        lineBreak: false,
+      });
     }
   });
 
@@ -330,7 +360,7 @@ export function buildReportPdf(data: ReportData): Promise<Buffer> {
     }
 
     use(doc, { size: 8, color: MUTED });
-    doc.text(pad('הופק אוטומטית'), PAGE_MARGIN, FOOTER_Y, {
+    doc.text(heb('הופק אוטומטית'), PAGE_MARGIN, FOOTER_Y, {
       width: CONTENT_WIDTH,
       align: 'right',
       lineBreak: false,
