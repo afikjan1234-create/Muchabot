@@ -13,9 +13,8 @@ import {
 } from './db';
 import { looksLikePhone } from './ocr';
 import { FeedbackStatus, OrgPhone, OrgPlan } from './types';
-import { sendReport } from './report-scheduler';
+import { businessDayFor, localNow, sendReport } from './report-scheduler';
 import { ReportPeriod } from './report';
-import { localNow } from './report-scheduler';
 
 function parsePlan(raw: unknown): OrgPlan | undefined {
   if (raw === undefined) return undefined;
@@ -115,8 +114,10 @@ adminRouter.post(
     if (!['daily', 'weekly', 'monthly'].includes(period)) {
       throw new Error(`תקופה לא תקינה: ${period}`);
     }
-    const today = localNow().date;
-    const to = String(req.body?.to ?? today);
+    // Same day the automatic run would cover, so a manual send and the
+    // scheduled one agree for a restaurant that closes after midnight.
+    const day = businessDayFor(localNow(), org.closingTime);
+    const to = String(req.body?.to ?? day);
     const from = String(req.body?.from ?? to);
 
     const result = await sendReport(org, period, from, to, { force: true });

@@ -23,9 +23,6 @@ interface LocalNow {
   date: string;
   /** HH:MM, 24h, in the restaurant's timezone. */
   hhmm: string;
-  /** 0 = Sunday … 6 = Saturday. The Israeli week ends on Saturday. */
-  weekday: number;
-  lastDayOfMonth: boolean;
 }
 
 function addDays(isoDate: string, days: number): string {
@@ -33,6 +30,22 @@ function addDays(isoDate: string, days: number): string {
   d.setUTCDate(d.getUTCDate() + days);
   return d.toISOString().slice(0, 10);
 }
+
+/** 0 = Sunday … 6 = Saturday. The Israeli week ends on Saturday. */
+function weekdayOf(isoDate: string): number {
+  return new Date(`${isoDate}T00:00:00Z`).getUTCDay();
+}
+
+function isLastDayOfMonth(isoDate: string): boolean {
+  return addDays(isoDate, 1).slice(5, 7) !== isoDate.slice(5, 7);
+}
+
+/**
+ * A closing time at or before this belongs to the night of the *previous*
+ * calendar day. Restaurants that shut at midnight or 01:00 are closing out
+ * the day that just ended, not opening the one whose clock just started.
+ */
+const AFTER_MIDNIGHT_CUTOFF = '05:00';
 
 export function localNow(now: Date = new Date()): LocalNow {
   const parts = new Intl.DateTimeFormat('en-CA', {
@@ -50,13 +63,20 @@ export function localNow(now: Date = new Date()): LocalNow {
       return acc;
     }, {});
 
-  const date = `${parts.year}-${parts.month}-${parts.day}`;
   return {
-    date,
+    date: `${parts.year}-${parts.month}-${parts.day}`,
     hhmm: `${parts.hour}:${parts.minute}`,
-    weekday: new Date(`${date}T00:00:00Z`).getUTCDay(),
-    lastDayOfMonth: addDays(date, 1).slice(5, 7) !== date.slice(5, 7),
   };
+}
+
+/**
+ * The calendar day a report covers: the business day that ends at this
+ * restaurant's closing time. For a place shutting at 22:00 that is today; for
+ * one shutting at midnight or 01:00 it is yesterday, since the clock has
+ * already rolled over by the time the doors close.
+ */
+export function businessDayFor(now: LocalNow, closingTime: string): string {
+  return closingTime < AFTER_MIDNIGHT_CUTOFF ? addDays(now.date, -1) : now.date;
 }
 
 interface DueReport {
@@ -65,17 +85,24 @@ interface DueReport {
   to: string;
 }
 
-/** Which reports this local moment calls for, newest period last. */
+/**
+ * Which reports this local moment calls for, newest period last.
+ *
+ * Every period is keyed to the business day being closed out, not to today's
+ * wall-clock date — otherwise a restaurant shutting at midnight would report
+ * on a day that started twenty seconds ago and is therefore always empty.
+ */
 export function dueReports(now: LocalNow, closingTime: string): DueReport[] {
   // 'HH:MM' strings compare correctly as text, so no parsing is needed.
   if (now.hhmm < closingTime) return [];
 
-  const due: DueReport[] = [{ period: 'daily', from: now.date, to: now.date }];
-  if (now.weekday === 6) {
-    due.push({ period: 'weekly', from: addDays(now.date, -6), to: now.date });
+  const day = businessDayFor(now, closingTime);
+  const due: DueReport[] = [{ period: 'daily', from: day, to: day }];
+  if (weekdayOf(day) === 6) {
+    due.push({ period: 'weekly', from: addDays(day, -6), to: day });
   }
-  if (now.lastDayOfMonth) {
-    due.push({ period: 'monthly', from: `${now.date.slice(0, 8)}01`, to: now.date });
+  if (isLastDayOfMonth(day)) {
+    due.push({ period: 'monthly', from: `${day.slice(0, 8)}01`, to: day });
   }
   return due;
 }
