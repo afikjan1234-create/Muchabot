@@ -4,7 +4,7 @@ import path from 'path';
 import { config } from './config';
 import { startScheduler } from './scheduler';
 import { handleOwnerImage, handleOwnerText, handleCustomerMessage } from './handler';
-import { getActiveFeedbackByPhone, getOrgByOwnerPhone } from './db';
+import { getActiveFeedbackByPhone, getFeedbackByWamid, getOrgByOwnerPhone, updateFeedback } from './db';
 import { sendTextMessage, credentialsFor } from './whatsapp';
 import { adminRouter } from './admin';
 
@@ -92,6 +92,22 @@ async function processMessage(message: any): Promise<void> {
   }
 }
 
+/**
+ * Meta reports delivery outcomes (sent/delivered/read/failed) as separate
+ * webhook events, keyed by the wamid we got back when sending — not as part
+ * of the send call itself. Without this, a template that Meta *accepted* but
+ * never actually delivered looks identical, forever, to one that worked: the
+ * row just sits at status 'sent' with no way to tell the two apart.
+ */
+async function processStatus(status: any): Promise<void> {
+  if (status?.status !== 'failed') return;
+  const feedback = await getFeedbackByWamid(status.id);
+  if (!feedback) return;
+  const detail = JSON.stringify(status.errors ?? status);
+  console.error(`[webhook] Delivery failed for feedback #${feedback.id} (${feedback.customerPhone}):`, detail);
+  await updateFeedback(feedback.id, { status: 'error', errorDetail: detail.slice(0, 500) });
+}
+
 app.post('/webhook', (req: Request, res: Response) => {
   res.sendStatus(200); // ack immediately — Meta requires a fast response
 
@@ -106,6 +122,13 @@ app.post('/webhook', (req: Request, res: Response) => {
             await processMessage(message);
           } catch (err) {
             console.error('[webhook] Error processing message:', err);
+          }
+        }
+        for (const status of change.value?.statuses ?? []) {
+          try {
+            await processStatus(status);
+          } catch (err) {
+            console.error('[webhook] Error processing status:', err);
           }
         }
       }
