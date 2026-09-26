@@ -142,6 +142,11 @@
       <div class="field"><label>שם המנהל</label><input id="orgManagerName" placeholder="למשל: אלעד"></div>
       <div class="field"><label>טלפון מנהל * (מקבל תלונות)</label><input id="orgManagerPhone" placeholder="0501234567" style="direction:ltr;text-align:right"></div>
     </div>
+    <div class="field">
+      <label>מנהלים נוספים (שותפים וכו' — מקבלים גם הם תלונות והתראות)</label>
+      <div id="managersList"></div>
+      <button class="btn-ghost btn-sm" onclick="addManagerRow()">+ הוספת מנהל</button>
+    </div>
     <div class="field"><label>קישור דירוג בוולט</label><input id="orgWolt" placeholder="https://wolt.com/..." style="direction:ltr;text-align:right"></div>
     <div class="field"><label>אימוג'י המסעדה</label><input id="orgEmoji" placeholder="למשל: 🍣" maxlength="8"><small>מופיע ליד שם המסעדה בהודעה הפותחת וברשימת הסיבות</small></div>
     <div class="field"><label>שעת סגירה</label><input id="orgClosing" type="time" value="22:00"><small>הדוחות (יומי/שבועי/חודשי) נשלחים למנהל בשעה זו</small></div>
@@ -311,6 +316,13 @@ function addPhoneRow(phone = '', label = '') {
   $('phonesList').appendChild(div);
 }
 
+function addManagerRow(phone = '', name = '') {
+  const div = document.createElement('div');
+  div.className = 'phone-row';
+  div.innerHTML = `<input placeholder="0501234567" value="${esc(phone)}"><input placeholder="שם" value="${esc(name)}"><button class="btn-danger-ghost btn-sm" onclick="this.parentElement.remove()">✕</button>`;
+  $('managersList').appendChild(div);
+}
+
 function onPlanChange() {
   $('dedicatedFields').classList.toggle('hidden', $('orgPlan').value !== 'dedicated');
 }
@@ -336,6 +348,8 @@ function openOrgModal(id) {
   onPlanChange();
   $('phonesList').innerHTML = '';
   (org?.phones?.length ? org.phones : [{ phone: '', label: '' }]).forEach(p => addPhoneRow(p.phone ? '+' + p.phone : '', p.label));
+  $('managersList').innerHTML = '';
+  (org?.managers || []).forEach(m => addManagerRow(m.phone ? '+' + m.phone : '', m.name));
   orgModal.showModal();
 }
 
@@ -344,6 +358,9 @@ async function saveOrg() {
   const phones = [...$('phonesList').querySelectorAll('.phone-row')]
     .map(r => ({ phone: r.children[0].value.trim(), label: r.children[1].value.trim() }))
     .filter(p => p.phone);
+  const managers = [...$('managersList').querySelectorAll('.phone-row')]
+    .map(r => ({ phone: r.children[0].value.trim(), name: r.children[1].value.trim() }))
+    .filter(m => m.phone);
   const plan = $('orgPlan').value;
   if (plan === 'dedicated' && !$('orgPhoneNumberId').value.trim()) {
     return toast('חיבור ייעודי דורש Phone Number ID', true);
@@ -359,6 +376,7 @@ async function saveOrg() {
     templateName: $('orgTemplate').value.trim() || 'order_rating',
     isActive: $('orgActive').value === 'true',
     phones,
+    managers,
     plan,
     whatsappPhoneNumberId: plan === 'dedicated' ? $('orgPhoneNumberId').value.trim() : '',
   };

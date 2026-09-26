@@ -11,6 +11,12 @@ export interface Org {
   isActive: boolean;
   createdAt: string;
   phones?: OrgPhone[];
+  /**
+   * Managers beyond the required primary one (managerName/managerPhone) —
+   * partnerships, co-owners — who should also hear about a negative review
+   * and receive the periodic reports.
+   */
+  managers?: OrgManager[];
   /** 'shared' = platform's default WhatsApp number; 'dedicated' = this org's own number. */
   plan: OrgPlan;
   /** Meta phone_number_id for this org's dedicated number. Null when plan is 'shared'. */
@@ -38,6 +44,11 @@ export interface WhatsAppCredentials {
 export interface OrgPhone {
   phone: string;
   label: string;
+}
+
+export interface OrgManager {
+  phone: string;
+  name: string;
 }
 
 export type FeedbackStatus = 'pending' | 'sending' | 'sent' | 'completed' | 'error' | 'cancelled';

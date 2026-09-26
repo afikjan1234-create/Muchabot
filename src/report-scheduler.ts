@@ -5,7 +5,7 @@ import {
   releaseReportRun,
 } from './db';
 import { buildReportPdf, reportCaption, reportFileName, ReportPeriod } from './report';
-import { credentialsFor, sendDocument, uploadMedia } from './whatsapp';
+import { credentialsFor, managerPhones, sendDocument, uploadMedia } from './whatsapp';
 import { Org } from './types';
 
 /**
@@ -132,13 +132,23 @@ export async function sendReport(
     const creds = credentialsFor(org);
     const filename = reportFileName(period, to);
     const mediaId = await uploadMedia(creds, pdf, filename, 'application/pdf');
-    await sendDocument(
-      creds,
-      org.managerPhone,
-      mediaId,
-      filename,
-      reportCaption(org, period, from, to)
-    );
+
+    // One upload, sent to every manager — and each recipient gets its own
+    // try/catch so one manager's lapsed 24h session doesn't sink delivery to
+    // the rest. Only retreat to 'failed' (and let the next poll retry) if
+    // NOBODY got it; if even one did, retrying would duplicate their copy.
+    let deliveredToAnyone = false;
+    for (const phone of managerPhones(org)) {
+      try {
+        await sendDocument(creds, phone, mediaId, filename, reportCaption(org, period, from, to));
+        deliveredToAnyone = true;
+      } catch (err: any) {
+        const detail = err?.response?.data?.error ?? err?.message ?? err;
+        console.error(`[reports] ${period} report for ${org.name} to ${phone} failed:`, JSON.stringify(detail));
+      }
+    }
+    if (!deliveredToAnyone) throw new Error('report delivery failed for every manager phone');
+
     console.log(`[reports] Sent ${period} report for ${org.name} (${entries.length} rows)`);
     return 'sent';
   } catch (err: any) {

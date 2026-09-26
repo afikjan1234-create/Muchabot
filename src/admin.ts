@@ -12,7 +12,7 @@ import {
   updateOrg,
 } from './db';
 import { looksLikePhone } from './ocr';
-import { FeedbackStatus, OrgPhone, OrgPlan } from './types';
+import { FeedbackStatus, OrgManager, OrgPhone, OrgPlan } from './types';
 import { businessDayFor, localNow, sendReport } from './report-scheduler';
 import { ReportPeriod } from './report';
 
@@ -59,6 +59,17 @@ function parsePhones(raw: unknown): OrgPhone[] {
   return phones;
 }
 
+function parseManagers(raw: unknown): OrgManager[] {
+  if (!Array.isArray(raw)) return [];
+  const managers: OrgManager[] = [];
+  for (const item of raw) {
+    const normalized = looksLikePhone(String(item?.phone ?? ''));
+    if (!normalized) throw new Error(`מספר טלפון מנהל לא תקין: ${item?.phone}`);
+    managers.push({ phone: normalized, name: String(item?.name ?? '') });
+  }
+  return managers;
+}
+
 adminRouter.get(
   '/orgs',
   handle(async (_req, res) => {
@@ -93,7 +104,8 @@ adminRouter.post(
         whatsappPhoneNumberId: b.whatsappPhoneNumberId ? String(b.whatsappPhoneNumberId).trim() : null,
         whatsappToken: b.whatsappToken ? String(b.whatsappToken).trim() : null,
       },
-      parsePhones(b.phones)
+      parsePhones(b.phones),
+      parseManagers(b.managers)
     );
     res.json(org);
   })
@@ -156,7 +168,8 @@ adminRouter.put(
         whatsappToken:
           b.whatsappToken !== undefined ? String(b.whatsappToken).trim() || null : undefined,
       },
-      b.phones !== undefined ? parsePhones(b.phones) : undefined
+      b.phones !== undefined ? parsePhones(b.phones) : undefined,
+      b.managers !== undefined ? parseManagers(b.managers) : undefined
     );
     res.json(org);
   })

@@ -1,5 +1,11 @@
 import { claimDueFeedbacks, resetStuckSending, updateFeedback } from './db';
-import { sendFeedbackTemplate, sendTextMessage, credentialsFor, restaurantLabel } from './whatsapp';
+import {
+  sendFeedbackTemplate,
+  sendTextMessage,
+  credentialsFor,
+  managerPhones,
+  restaurantLabel,
+} from './whatsapp';
 import { config } from './config';
 import { Feedback } from './types';
 import { checkReports } from './report-scheduler';
@@ -30,15 +36,19 @@ async function sendOne(feedback: Feedback): Promise<void> {
     console.error(`[scheduler] Failed to send #${feedback.id} to ${feedback.customerPhone}:`, detail);
     await updateFeedback(feedback.id, { status: 'error', errorDetail: detail.slice(0, 500) });
 
-    // Best-effort: tell the restaurant manager the message never went out
-    try {
-      await sendTextMessage(
-        creds,
-        org.managerPhone,
-        `⚠️ [${org.name}] שליחת הודעת פידבק ל${feedback.customerName || feedback.customerPhone} (+${feedback.customerPhone}) נכשלה. בדוק שהמספר תקין ונסה שוב דרך דף הניהול.`
-      );
-    } catch {
-      // Manager notification is best-effort only
+    // Best-effort: tell every manager the message never went out. Each phone
+    // gets its own try/catch so one manager's failure (e.g. their own 24h
+    // session window has lapsed) doesn't stop the others from being told.
+    for (const phone of managerPhones(org)) {
+      try {
+        await sendTextMessage(
+          creds,
+          phone,
+          `⚠️ [${org.name}] שליחת הודעת פידבק ל${feedback.customerName || feedback.customerPhone} (+${feedback.customerPhone}) נכשלה. בדוק שהמספר תקין ונסה שוב דרך דף הניהול.`
+        );
+      } catch {
+        // Manager notification is best-effort only
+      }
     }
   }
 }

@@ -1,6 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 import { config } from './config';
-import { Feedback, FeedbackStatus, Org, OrgPhone, OrgPlan } from './types';
+import { Feedback, FeedbackStatus, Org, OrgManager, OrgPhone, OrgPlan } from './types';
 
 // Windows/undici occasionally drops connections to Supabase ("fetch failed").
 // Retry only network-level failures (connection never established) — HTTP
@@ -38,6 +38,9 @@ function toOrg(row: Record<string, any>): Org {
     createdAt: row.created_at,
     phones: Array.isArray(row.org_phones)
       ? row.org_phones.map((p: any) => ({ phone: p.phone, label: p.label }))
+      : undefined,
+    managers: Array.isArray(row.org_managers)
+      ? row.org_managers.map((m: any) => ({ phone: m.phone, name: m.name }))
       : undefined,
     plan: row.plan ?? 'shared',
     whatsappPhoneNumberId: row.whatsapp_phone_number_id ?? null,
@@ -79,7 +82,7 @@ function fail(op: string, error: { message: string } | null): never {
 export async function getOrgByOwnerPhone(phone: string): Promise<Org | null> {
   const { data, error } = await supabase
     .from('org_phones')
-    .select('phone, orgs(*)')
+    .select('phone, orgs(*, org_managers(phone, name))')
     .eq('phone', phone)
     .maybeSingle();
   if (error) fail('getOrgByOwnerPhone', error);
@@ -91,7 +94,7 @@ export async function getOrgByOwnerPhone(phone: string): Promise<Org | null> {
 export async function getOrgById(id: string): Promise<Org | null> {
   const { data, error } = await supabase
     .from('orgs')
-    .select('*, org_phones(phone, label)')
+    .select('*, org_phones(phone, label), org_managers(phone, name)')
     .eq('id', id)
     .maybeSingle();
   if (error) fail('getOrgById', error);
@@ -101,7 +104,7 @@ export async function getOrgById(id: string): Promise<Org | null> {
 export async function listOrgs(): Promise<Org[]> {
   const { data, error } = await supabase
     .from('orgs')
-    .select('*, org_phones(phone, label)')
+    .select('*, org_phones(phone, label), org_managers(phone, name)')
     .order('created_at', { ascending: true });
   if (error) fail('listOrgs', error);
   return (data ?? []).map(toOrg);
@@ -139,7 +142,11 @@ function orgInputToRow(input: Partial<OrgInput>): Record<string, unknown> {
   return row;
 }
 
-export async function createOrg(input: OrgInput, phones: OrgPhone[]): Promise<Org> {
+export async function createOrg(
+  input: OrgInput,
+  phones: OrgPhone[],
+  managers: OrgManager[] = []
+): Promise<Org> {
   const { data, error } = await supabase
     .from('orgs')
     .insert(orgInputToRow(input))
@@ -147,16 +154,23 @@ export async function createOrg(input: OrgInput, phones: OrgPhone[]): Promise<Or
     .single();
   if (error) fail('createOrg', error);
   await setOrgPhones(data.id, phones);
+  await setOrgManagers(data.id, managers);
   return (await getOrgById(data.id))!;
 }
 
-export async function updateOrg(id: string, input: Partial<OrgInput>, phones?: OrgPhone[]): Promise<Org> {
+export async function updateOrg(
+  id: string,
+  input: Partial<OrgInput>,
+  phones?: OrgPhone[],
+  managers?: OrgManager[]
+): Promise<Org> {
   const row = orgInputToRow(input);
   if (Object.keys(row).length > 0) {
     const { error } = await supabase.from('orgs').update(row).eq('id', id);
     if (error) fail('updateOrg', error);
   }
   if (phones) await setOrgPhones(id, phones);
+  if (managers) await setOrgManagers(id, managers);
   return (await getOrgById(id))!;
 }
 
@@ -173,6 +187,16 @@ async function setOrgPhones(orgId: string, phones: OrgPhone[]): Promise<void> {
     .from('org_phones')
     .insert(phones.map((p) => ({ phone: p.phone, org_id: orgId, label: p.label ?? '' })));
   if (error) fail('setOrgPhones/insert', error);
+}
+
+async function setOrgManagers(orgId: string, managers: OrgManager[]): Promise<void> {
+  const { error: delError } = await supabase.from('org_managers').delete().eq('org_id', orgId);
+  if (delError) fail('setOrgManagers/delete', delError);
+  if (managers.length === 0) return;
+  const { error } = await supabase
+    .from('org_managers')
+    .insert(managers.map((m) => ({ phone: m.phone, org_id: orgId, name: m.name ?? '' })));
+  if (error) fail('setOrgManagers/insert', error);
 }
 
 // ─── Feedbacks ──────────────────────────────────────────────────────────────
@@ -194,7 +218,7 @@ export async function createFeedback(
       order_number: order.orderNumber ?? null,
       order_amount: order.orderAmount ?? null,
     })
-    .select('*, orgs(*)')
+    .select('*, orgs(*, org_managers(phone, name))')
     .single();
   if (error) fail('createFeedback', error);
   return toFeedback(data);
@@ -203,7 +227,7 @@ export async function createFeedback(
 export async function getFeedbackByWamid(wamid: string): Promise<Feedback | null> {
   const { data, error } = await supabase
     .from('feedbacks')
-    .select('*, orgs(*)')
+    .select('*, orgs(*, org_managers(phone, name))')
     .eq('wa_message_id', wamid)
     .maybeSingle();
   if (error) fail('getFeedbackByWamid', error);
@@ -224,7 +248,7 @@ export async function getActiveFeedbackByPhone(customerPhone: string): Promise<F
   const cutoff = new Date(Date.now() - ACTIVE_CONVERSATION_WINDOW_MS).toISOString();
   const { data, error } = await supabase
     .from('feedbacks')
-    .select('*, orgs(*)')
+    .select('*, orgs(*, org_managers(phone, name))')
     .eq('customer_phone', customerPhone)
     .in('status', ['sent'])
     .gte('sent_at', cutoff)
@@ -246,7 +270,7 @@ export async function claimDueFeedbacks(): Promise<Feedback[]> {
     .update({ status: 'sending' })
     .eq('status', 'pending')
     .lte('scheduled_at', new Date().toISOString())
-    .select('*, orgs(*)');
+    .select('*, orgs(*, org_managers(phone, name))');
   if (error) fail('claimDueFeedbacks', error);
   return (data ?? []).map(toFeedback);
 }
@@ -297,7 +321,7 @@ export async function listFeedbacks(filters: {
 }): Promise<Feedback[]> {
   let query = supabase
     .from('feedbacks')
-    .select('*, orgs(*)')
+    .select('*, orgs(*, org_managers(phone, name))')
     .order('created_at', { ascending: false })
     .limit(filters.limit ?? 100);
   if (filters.orgId) query = query.eq('org_id', filters.orgId);

@@ -9,6 +9,7 @@ import {
   sendListMessage,
   downloadMedia,
   credentialsFor,
+  managerPhones,
   restaurantLabel,
 } from './whatsapp';
 import {
@@ -294,12 +295,20 @@ async function notifyManager(
   feedbackId: number,
   text: string
 ): Promise<void> {
-  try {
-    await sendTextMessage(creds, org.managerPhone, text);
-  } catch (err: any) {
-    const detail = JSON.stringify(err?.response?.data?.error ?? err?.message ?? err);
-    console.error(`[handler] Manager alert failed for #${feedbackId}:`, detail);
-    await updateFeedback(feedbackId, { errorDetail: `manager alert failed: ${detail}`.slice(0, 500) });
+  const failures: string[] = [];
+  for (const phone of managerPhones(org)) {
+    try {
+      await sendTextMessage(creds, phone, text);
+    } catch (err: any) {
+      const detail = JSON.stringify(err?.response?.data?.error ?? err?.message ?? err);
+      console.error(`[handler] Manager alert to ${phone} failed for #${feedbackId}:`, detail);
+      failures.push(`${phone}: ${detail}`);
+    }
+  }
+  if (failures.length) {
+    await updateFeedback(feedbackId, {
+      errorDetail: `manager alert failed: ${failures.join('; ')}`.slice(0, 500),
+    });
   }
 }
 

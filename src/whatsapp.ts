@@ -28,6 +28,18 @@ export function restaurantLabel(org: Org): string {
   return [org.name, org.greetingEmoji?.trim()].filter(Boolean).join(' ');
 }
 
+/**
+ * Every phone that should hear about a negative review or receive the
+ * periodic report: the required primary manager plus any additional ones
+ * added for partnerships/co-owners. Deduplicated, since the same number
+ * typed into both the primary field and the extra list would otherwise
+ * receive everything twice.
+ */
+export function managerPhones(org: Org): string[] {
+  const all = [org.managerPhone, ...(org.managers ?? []).map((m) => m.phone)];
+  return [...new Set(all.filter(Boolean))];
+}
+
 const messagesUrl = (phoneNumberId: string) => `${config.graphApiBaseUrl}/${phoneNumberId}/messages`;
 
 function authHeaders(token: string) {
