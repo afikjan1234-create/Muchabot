@@ -277,6 +277,32 @@ async function askForReason(
   });
 }
 
+/**
+ * Manager-facing alerts are plain session messages, which WhatsApp only
+ * allows within 24h of that phone's OWN last message to the bot — unlike the
+ * customer replies sent right alongside each of these calls, which are
+ * always safe since the customer just messaged us to trigger this handler. A
+ * manager who doesn't chat with the bot daily makes every alert to them fail
+ * outright, and an uncaught failure here used to abort the rest of the
+ * function — so the customer's own reply never went out and their complaint
+ * effectively vanished. This always lets the customer-facing flow continue
+ * and records the failure instead of losing it.
+ */
+async function notifyManager(
+  creds: WhatsAppCredentials,
+  org: Org,
+  feedbackId: number,
+  text: string
+): Promise<void> {
+  try {
+    await sendTextMessage(creds, org.managerPhone, text);
+  } catch (err: any) {
+    const detail = JSON.stringify(err?.response?.data?.error ?? err?.message ?? err);
+    console.error(`[handler] Manager alert failed for #${feedbackId}:`, detail);
+    await updateFeedback(feedbackId, { errorDetail: `manager alert failed: ${detail}`.slice(0, 500) });
+  }
+}
+
 async function askForRating(
   org: Org,
   creds: WhatsAppCredentials,
@@ -377,7 +403,7 @@ export async function handleCustomerMessage(
     console.log(
       `[handler] #${feedback.id} (${customerPhone}) reason picked -> alerting manager ${org.managerPhone}`
     );
-    await sendTextMessage(creds, org.managerPhone, managerAlert(org, feedback, rating, reasonLabel));
+    await notifyManager(creds, org, feedback.id, managerAlert(org, feedback, rating, reasonLabel));
 
     if (reason) {
       await sendTextMessage(creds, customerPhone, 'אם תרצה, ספר לנו בקצרה מה קרה.');
@@ -386,7 +412,7 @@ export async function handleCustomerMessage(
 
     // Someone who types instead of picking has already said what went wrong —
     // take it as the explanation rather than asking the same question again.
-    await sendTextMessage(creds, org.managerPhone, `📝 [${org.name}] הלקוח הוסיף:\n\n"${payload}"`);
+    await notifyManager(creds, org, feedback.id, `📝 [${org.name}] הלקוח הוסיף:\n\n"${payload}"`);
     await sendTextMessage(
       creds,
       customerPhone,
@@ -412,9 +438,10 @@ export async function handleCustomerMessage(
     if (negative) {
       // The manager already has the alert; this is the detail they were told
       // might follow.
-      await sendTextMessage(
+      await notifyManager(
         creds,
-        org.managerPhone,
+        org,
+        feedback.id,
         `📝 [${org.name}] הערה מהלקוח ${feedback.customerName || MISSING} (${formatIsraeliPhone(feedback.customerPhone)}):\n\n"${payload}"`
       );
       await sendTextMessage(

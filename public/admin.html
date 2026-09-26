@@ -414,7 +414,7 @@ async function loadFeedbacks() {
       <td class="muted">${fmtDate(f.scheduledAt)}</td>
       <td><span class="badge ${STATUS_CLS[f.status] || ''}">${STATUS_HE[f.status] || f.status}</span></td>
       <td>${f.result ? `<span class="badge ${f.result === 'positive' ? 'b-positive' : 'b-manager'}">${RESULT_HE[f.result]}</span>` : '—'}</td>
-      <td style="max-width:220px">${esc(f.complaint || f.errorDetail || '') || '—'}</td>
+      <td style="max-width:220px">${[f.complaint ? esc(f.complaint) : '', f.errorDetail ? `⚠️ ${esc(f.errorDetail)}` : ''].filter(Boolean).join('<br>') || '—'}</td>
       <td>${f.status === 'pending' ? `<button class="btn-danger-ghost btn-sm" onclick="cancelFb(${f.id})">ביטול</button>` : ''}</td>
     </tr>`).join('');
 }
