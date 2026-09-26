@@ -1,6 +1,7 @@
 // End-to-end test: spawns the bot against a mock Graph API and drives the
 // full owner→schedule→send→customer-reply flow through the real webhook.
 // Usage: node test/e2e.js
+require('dotenv').config();
 const { spawn } = require('child_process');
 const axios = require('axios');
 const { start } = require('./mock-graph');
@@ -11,7 +12,46 @@ const BOT = `http://127.0.0.1:${BOT_PORT}`;
 const OWNER = '972500000001';
 const CUSTOMER_A = '972500000091';
 const CUSTOMER_B = '972500000092';
+const CUSTOMER_STALE = '972500000099';
 const ADMIN_KEY = process.env.ADMIN_KEY || 'rfb_admin_9x4Kq2mWv8Tz5Lp1';
+
+// Direct Supabase access, for setting up state the admin API has no reason to
+// expose (an abandoned conversation from days ago) — everything else in this
+// suite goes through the bot's own HTTP surface on purpose.
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_KEY = process.env.SUPABASE_KEY;
+function supabaseHeaders() {
+  return {
+    apikey: SUPABASE_KEY,
+    Authorization: `Bearer ${SUPABASE_KEY}`,
+    'Content-Type': 'application/json',
+    Prefer: 'return=representation',
+  };
+}
+async function insertStaleFeedback(orgId, phone, hoursAgo) {
+  const sentAt = new Date(Date.now() - hoursAgo * 3600_000).toISOString();
+  const { data } = await axios.post(
+    `${SUPABASE_URL}/rest/v1/feedbacks`,
+    {
+      org_id: orgId,
+      customer_phone: phone,
+      customer_name: 'שיחה נטושה',
+      scheduled_at: sentAt,
+      sent_at: sentAt,
+      status: 'sent',
+      conversation_state: 'waiting_feedback',
+      wa_message_id: `wamid.STALE_${phone}_${Date.now()}`,
+    },
+    { headers: supabaseHeaders() }
+  );
+  return data[0].id;
+}
+async function getFeedbackRow(id) {
+  const { data } = await axios.get(`${SUPABASE_URL}/rest/v1/feedbacks?id=eq.${id}&select=*`, {
+    headers: supabaseHeaders(),
+  });
+  return data[0] ?? null;
+}
 
 const results = [];
 function check(name, cond, detail = '') {
@@ -343,6 +383,41 @@ async function main() {
     const weeklyDoc = await waitFor(async () =>
       mock.sent.find((m) => m.type === 'document' && (m.raw?.document?.filename ?? '').includes('weekly')));
     check('Weekly report filename marked weekly', !!weeklyDoc, weeklyDoc?.raw?.document?.filename);
+
+    // ── Scenario K: an abandoned old conversation must never hijack a new
+    // one for the same phone number (the exact bug seen in production:
+    // askForRating/askForReason didn't re-anchor wa_message_id, so once the
+    // real conversation resolved, "most recent status=sent row for this
+    // phone" fell through to a days-old stale row and replayed the whole
+    // flow against it) ──
+    mock.sent.length = 0;
+    const staleId = await insertStaleFeedback(org.id, CUSTOMER_STALE, 25); // > the 24h window
+    await api('post', '/feedbacks', {
+      orgId: org.id, customerPhone: CUSTOMER_STALE.replace(/^972/, '0'), customerName: 'לקוח טרי', delayMinutes: 0,
+    });
+    const staleTemplate = await waitFor(async () =>
+      mock.sent.find((m) => m.type === 'template' && m.to === CUSTOMER_STALE), 20000);
+    check('Fresh conversation template sent despite an old stale row for the same phone', !!staleTemplate);
+
+    await customerButton(CUSTOMER_STALE, 'היה מדהים', staleTemplate.wamid);
+    const staleWolt = await waitFor(async () =>
+      mock.sent.find((m) => m.to === CUSTOMER_STALE && m.summary.includes('wolt.com/he/test')));
+    check('Rating resolves against the NEW row, not the stale one', !!staleWolt);
+
+    const staleRowAfter = await getFeedbackRow(staleId);
+    check('Stale row was never touched (still its original untouched state)',
+      staleRowAfter?.status === 'sent' && staleRowAfter?.conversation_state === 'waiting_feedback' && staleRowAfter?.rating === null,
+      JSON.stringify(staleRowAfter));
+
+    // The real conversation is now resolved and outside the 24h window has
+    // no other 'sent' row for this phone — an unrelated free-text message
+    // must be silently ignored, not restart the whole greeting from scratch.
+    mock.sent.length = 0;
+    await customerText(CUSTOMER_STALE, 'תודה');
+    await new Promise((r) => setTimeout(r, 1500));
+    check('Unrelated text after resolution does NOT resend the greeting (no stale-row hijack)',
+      !mock.sent.some((m) => m.to === CUSTOMER_STALE),
+      JSON.stringify(mock.sent.map((m) => m.summary)));
 
     // ── Stats ──
     const stats = await api('get', '/stats');

@@ -245,24 +245,52 @@ function managerAlert(
   ].join('\n');
 }
 
-async function askForReason(org: Org, creds: WhatsAppCredentials, to: string): Promise<void> {
-  await sendListMessage(
+/**
+ * Every list message sent mid-conversation must re-anchor `wa_message_id` to
+ * itself. WhatsApp echoes back whichever message the customer's reply is
+ * threaded to as `context.id` — if that id isn't the one on file, the lookup
+ * misses and falls back to "most recent active row for this phone", which is
+ * exactly how an unrelated stale conversation can get mistaken for this one.
+ */
+async function askForReason(
+  org: Org,
+  creds: WhatsAppCredentials,
+  to: string,
+  feedbackId: number
+): Promise<void> {
+  const wamid = await sendListMessage(
     creds,
     to,
     'מצטערים לשמוע 🙏\nנשמח להבין מה היה פחות טוב כדי שנוכל להשתפר:',
     'בחירת סיבה',
     REASON_OPTIONS.map((o) => ({ id: o.id, title: reasonRowTitle(o, org.greetingEmoji) }))
   );
+  // One write, not two: the list is already visible to the customer the
+  // instant this call returns, so a reply can arrive before a second,
+  // separate "now set conversationState" write would have landed — a real
+  // race that briefly left the row looking like it was still on the
+  // previous step. Bundling the wamid and the state into a single update
+  // closes that window instead of widening it.
+  await updateFeedback(feedbackId, {
+    conversationState: 'waiting_reason',
+    ...(wamid ? { waMessageId: wamid } : {}),
+  });
 }
 
-async function askForRating(org: Org, creds: WhatsAppCredentials, to: string): Promise<void> {
-  await sendListMessage(
+async function askForRating(
+  org: Org,
+  creds: WhatsAppCredentials,
+  to: string,
+  feedbackId: number
+): Promise<void> {
+  const wamid = await sendListMessage(
     creds,
     to,
     `היי 👋 כאן ${restaurantLabel(org)}\nנשמח לדעת איך הייתה ההזמנה שלך היום ❤️\nאיך היית מדרג את ההזמנה?`,
     'בחירת דירוג',
     RATING_OPTIONS.map((o) => ({ id: ratingRowId(o.rating), title: o.label }))
   );
+  if (wamid) await updateFeedback(feedbackId, { waMessageId: wamid });
 }
 
 export async function handleCustomerMessage(
@@ -275,6 +303,14 @@ export async function handleCustomerMessage(
   let feedback = contextWamid ? await getFeedbackByWamid(contextWamid) : null;
   if (!feedback || !feedback.org) {
     feedback = await getActiveFeedbackByPhone(customerPhone);
+    // Routing fell through to the "most recent active row for this phone"
+    // guess rather than an exact reply-thread match — worth a log line, since
+    // a stale row surfacing here again is exactly how the last mix-up looked.
+    if (feedback) {
+      console.log(
+        `[handler] ${customerPhone}: contextWamid did not resolve, falling back to #${feedback.id} (state=${feedback.conversationState})`
+      );
+    }
   }
   if (!feedback?.org || !feedback.conversationState) {
     console.log(`[handler] Ignoring message from ${customerPhone} — no active feedback`);
@@ -291,15 +327,14 @@ export async function handleCustomerMessage(
     // rather than a score, so it goes to the reason list with no rating set.
     if (rating === null && payload.includes(LEGACY_MANAGER_BUTTON)) {
       await updateFeedback(feedback.id, { result: 'manager' });
-      await askForReason(org, creds, customerPhone);
-      await updateFeedback(feedback.id, { conversationState: 'waiting_reason' });
+      await askForReason(org, creds, customerPhone, feedback.id);
       return;
     }
 
     if (rating === null) {
       // Anything that isn't one of the five answers — offer them again. This
       // has to be a list: WhatsApp caps interactive reply buttons at three.
-      await askForRating(org, creds, customerPhone);
+      await askForRating(org, creds, customerPhone, feedback.id);
       return;
     }
 
@@ -325,8 +360,7 @@ export async function handleCustomerMessage(
       return;
     }
 
-    await askForReason(org, creds, customerPhone);
-    await updateFeedback(feedback.id, { conversationState: 'waiting_reason' });
+    await askForReason(org, creds, customerPhone, feedback.id);
     return;
   }
 
@@ -340,6 +374,9 @@ export async function handleCustomerMessage(
       conversationState: 'waiting_note',
       ...(reasonLabel ? { reason: reasonLabel } : {}),
     });
+    console.log(
+      `[handler] #${feedback.id} (${customerPhone}) reason picked -> alerting manager ${org.managerPhone}`
+    );
     await sendTextMessage(creds, org.managerPhone, managerAlert(org, feedback, rating, reasonLabel));
 
     if (reason) {

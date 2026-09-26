@@ -4,7 +4,13 @@ import path from 'path';
 import { config } from './config';
 import { startScheduler } from './scheduler';
 import { handleOwnerImage, handleOwnerText, handleCustomerMessage } from './handler';
-import { getActiveFeedbackByPhone, getFeedbackByWamid, getOrgByOwnerPhone, updateFeedback } from './db';
+import {
+  claimMessage,
+  getActiveFeedbackByPhone,
+  getFeedbackByWamid,
+  getOrgByOwnerPhone,
+  updateFeedback,
+} from './db';
 import { sendTextMessage, credentialsFor } from './whatsapp';
 import { adminRouter } from './admin';
 
@@ -119,6 +125,13 @@ app.post('/webhook', (req: Request, res: Response) => {
       for (const change of entry.changes ?? []) {
         for (const message of change.value?.messages ?? []) {
           try {
+            // Meta guarantees at-least-once delivery and does redeliver in
+            // practice — without this, a redelivered order photo creates a
+            // second feedback row and messages the customer twice.
+            if (message.id && !(await claimMessage(message.id))) {
+              console.log(`[webhook] Skipping duplicate delivery of message ${message.id}`);
+              continue;
+            }
             await processMessage(message);
           } catch (err) {
             console.error('[webhook] Error processing message:', err);

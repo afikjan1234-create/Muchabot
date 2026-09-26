@@ -210,12 +210,24 @@ export async function getFeedbackByWamid(wamid: string): Promise<Feedback | null
   return data ? toFeedback(data) : null;
 }
 
+// WhatsApp itself closes the free-form messaging session 24h after the
+// customer's last message — a session-type reply to anyone older than that
+// would fail anyway. Bounding the fallback lookup to the same window means an
+// abandoned conversation (a customer who never answered, an old test row)
+// can never resurface to hijack an unrelated LATER conversation with the same
+// phone number. Without this bound, once the real active row finishes,
+// "most recent status=sent row for this phone" silently falls through to
+// whatever stale row is next in line and restarts the whole flow for it.
+const ACTIVE_CONVERSATION_WINDOW_MS = 24 * 60 * 60_000;
+
 export async function getActiveFeedbackByPhone(customerPhone: string): Promise<Feedback | null> {
+  const cutoff = new Date(Date.now() - ACTIVE_CONVERSATION_WINDOW_MS).toISOString();
   const { data, error } = await supabase
     .from('feedbacks')
     .select('*, orgs(*)')
     .eq('customer_phone', customerPhone)
     .in('status', ['sent'])
+    .gte('sent_at', cutoff)
     .order('created_at', { ascending: false })
     .limit(1)
     .maybeSingle();
@@ -369,6 +381,21 @@ export async function claimReportRun(
   if (!error) return true;
   if ((error as { code?: string }).code === '23505') return false; // already claimed
   fail('claimReportRun', error);
+}
+
+/**
+ * Claims the right to process one inbound webhook message, by wamid. Meta
+ * guarantees at-least-once delivery and does redeliver in practice (slow
+ * responses, transient errors) — without this, a redelivered order photo
+ * creates a second feedback row and messages the customer twice, and a
+ * redelivered button press double-fires the manager alert. The insert is the
+ * lock: a duplicate delivery hits the primary key and is dropped.
+ */
+export async function claimMessage(wamid: string): Promise<boolean> {
+  const { error } = await supabase.from('processed_messages').insert({ wamid });
+  if (!error) return true;
+  if ((error as { code?: string }).code === '23505') return false; // already processed
+  fail('claimMessage', error);
 }
 
 /** Gives the claim back so a failed send is retried on the next poll. */
