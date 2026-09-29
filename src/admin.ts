@@ -11,15 +11,97 @@ import {
   listOrgs,
   updateOrg,
 } from './db';
-import { looksLikePhone } from './ocr';
-import { FeedbackStatus, OrgManager, OrgPhone, OrgPlan } from './types';
+import { formatIsraeliPhone, looksLikePhone } from './ocr';
+import { FeedbackStatus, Org, OrgManager, OrgPhone, OrgPlan } from './types';
 import { businessDayFor, localNow, sendReport } from './report-scheduler';
 import { ReportPeriod } from './report';
+import { credentialsFor, managerPhones, sendTextMessage } from './whatsapp';
 
 function parsePlan(raw: unknown): OrgPlan | undefined {
   if (raw === undefined) return undefined;
   if (raw !== 'shared' && raw !== 'dedicated') throw new Error(`סוג חיבור לא תקין: ${raw}`);
   return raw;
+}
+
+/**
+ * Describes what changed between two versions of an org, active status
+ * first since that's the one that actually stops the bot from working.
+ * whatsappToken is deliberately never included here — it's a secret.
+ */
+function describeOrgChanges(before: Org, after: Org): string[] {
+  const lines: string[] = [];
+  if (before.isActive !== after.isActive) {
+    lines.push(
+      after.isActive
+        ? '✅ הבוט הופעל מחדש — חוזר לעבוד כרגיל.'
+        : '⛔ הבוט הושבת — לא ניתן להשתמש בו עד שיופעל מחדש דרך דף הניהול.'
+    );
+  }
+  if (before.name !== after.name) lines.push(`שם המסעדה שונה: "${before.name}" ← "${after.name}"`);
+  if (before.managerName !== after.managerName) {
+    lines.push(`שם המנהל שונה: "${before.managerName || '—'}" ← "${after.managerName || '—'}"`);
+  }
+  if (before.managerPhone !== after.managerPhone) {
+    lines.push(
+      `טלפון המנהל הראשי שונה: ${formatIsraeliPhone(before.managerPhone)} ← ${formatIsraeliPhone(after.managerPhone)}`
+    );
+  }
+  if (before.woltRatingUrl !== after.woltRatingUrl) lines.push('קישור דירוג וולט עודכן.');
+  if (before.greetingEmoji !== after.greetingEmoji) {
+    lines.push(`אימוג'י המסעדה שונה ל-${after.greetingEmoji || '(ללא)'}`);
+  }
+  if (before.closingTime !== after.closingTime) {
+    lines.push(`שעת סגירה שונתה: ${before.closingTime} ← ${after.closingTime}`);
+  }
+  if (before.feedbackDelayMinutes !== after.feedbackDelayMinutes) {
+    lines.push(`השהיית שליחת פידבק שונתה: ${before.feedbackDelayMinutes} ← ${after.feedbackDelayMinutes} דק'`);
+  }
+  if (before.templateName !== after.templateName) {
+    lines.push(`תבנית WhatsApp שונתה: ${before.templateName} ← ${after.templateName}`);
+  }
+  if (before.plan !== after.plan) {
+    const label = (p: string) => (p === 'dedicated' ? 'ייעודי' : 'משותף');
+    lines.push(`סוג החיבור שונה: ${label(before.plan)} ← ${label(after.plan)}`);
+  }
+  if (before.whatsappPhoneNumberId !== after.whatsappPhoneNumberId) {
+    lines.push('מספר ה-WhatsApp הייעודי עודכן.');
+  }
+
+  const phoneSet = (list?: { phone: string }[]) =>
+    [...(list ?? [])].map((p) => p.phone).sort().join(',');
+  if (phoneSet(before.phones) !== phoneSet(after.phones)) {
+    lines.push('רשימת הטלפונים המורשים לשליחת לקוחות עודכנה.');
+  }
+  if (phoneSet(before.managers) !== phoneSet(after.managers)) {
+    lines.push('רשימת המנהלים הנוספים עודכנה.');
+  }
+  return lines;
+}
+
+/**
+ * Best-effort notice to whoever could receive an alert either before or
+ * after this edit — so a manager who was just removed still hears that they
+ * no longer will, and one newly added hears about the change that added
+ * them. Like every other manager-facing text, this only actually lands if
+ * that phone has messaged the bot in the last 24h (WhatsApp's session
+ * window) — a manager who has never texted the bot won't receive it, only
+ * see it logged.
+ */
+async function notifyOrgChanged(before: Org, after: Org): Promise<void> {
+  const changes = describeOrgChanges(before, after);
+  if (changes.length === 0) return;
+  const creds = credentialsFor(after);
+  const text = `⚙️ [${after.name}] עודכנו הגדרות הבוט:\n\n${changes.map((c) => `• ${c}`).join('\n')}`;
+  for (const phone of new Set([...managerPhones(before), ...managerPhones(after)])) {
+    try {
+      await sendTextMessage(creds, phone, text);
+    } catch (err) {
+      console.error(
+        `[admin] Settings-change notice to ${phone} failed:`,
+        err instanceof Error ? err.message : err
+      );
+    }
+  }
 }
 
 export const adminRouter = Router();
@@ -107,6 +189,20 @@ adminRouter.post(
       parsePhones(b.phones),
       parseManagers(b.managers)
     );
+
+    // Best-effort welcome — only actually lands once a manager has texted
+    // this WhatsApp number at least once (see notifyOrgChanged above); until
+    // then it's a no-op logged to the console, not a failure worth surfacing.
+    const creds = credentialsFor(org);
+    const welcome = `🎉 הבוט הוגדר בהצלחה עבור ${org.name}!\nמכאן תקבל/י התראות על ביקורות שליליות ודוחות תקופתיים.`;
+    for (const phone of managerPhones(org)) {
+      try {
+        await sendTextMessage(creds, phone, welcome);
+      } catch (err) {
+        console.error(`[admin] Welcome notice to ${phone} failed:`, err instanceof Error ? err.message : err);
+      }
+    }
+
     res.json(org);
   })
 );
@@ -140,6 +236,9 @@ adminRouter.post(
 adminRouter.put(
   '/orgs/:id',
   handle(async (req, res) => {
+    const before = await getOrgById(req.params.id);
+    if (!before) throw new Error('מסעדה לא נמצאה');
+
     const b = req.body;
     const managerPhone =
       b.managerPhone !== undefined ? looksLikePhone(String(b.managerPhone)) : undefined;
@@ -171,6 +270,7 @@ adminRouter.put(
       b.phones !== undefined ? parsePhones(b.phones) : undefined,
       b.managers !== undefined ? parseManagers(b.managers) : undefined
     );
+    await notifyOrgChanged(before, org);
     res.json(org);
   })
 );
@@ -203,6 +303,7 @@ adminRouter.post(
     const b = req.body;
     const org = await getOrgById(String(b?.orgId ?? ''));
     if (!org) throw new Error('מסעדה לא נמצאה');
+    if (!org.isActive) throw new Error('המסעדה מושבתת — הפעל אותה מחדש לפני שליחת פידבק');
     const phone = looksLikePhone(String(b.customerPhone ?? ''));
     if (!phone) throw new Error(`מספר לקוח לא תקין: ${b.customerPhone}`);
     const delayMinutes =

@@ -65,6 +65,13 @@ export async function pollOnce(): Promise<void> {
         await updateFeedback(feedback.id, { status: 'error', errorDetail: 'org not found' });
         continue;
       }
+      // claimDueFeedbacks filters only on the feedback row itself — a row
+      // scheduled before the org was disabled is still 'pending' and due,
+      // and would otherwise go out anyway. isActive must be re-checked here.
+      if (!feedback.org.isActive) {
+        await updateFeedback(feedback.id, { status: 'error', errorDetail: 'org is inactive' });
+        continue;
+      }
       await sendOne(feedback);
     }
     // Closing-time reports ride the same tick; each is claimed once, so
