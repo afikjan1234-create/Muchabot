@@ -7,6 +7,7 @@ import {
   deleteOrg,
   getOrgById,
   getOrgStats,
+  hasRecentFeedback,
   listFeedbacks,
   listOrgs,
   updateOrg,
@@ -306,6 +307,9 @@ adminRouter.post(
     if (!org.isActive) throw new Error('המסעדה מושבתת — הפעל אותה מחדש לפני שליחת פידבק');
     const phone = looksLikePhone(String(b.customerPhone ?? ''));
     if (!phone) throw new Error(`מספר לקוח לא תקין: ${b.customerPhone}`);
+    if (await hasRecentFeedback(org.id, phone)) {
+      throw new Error('ללקוח הזה כבר נשלחה הודעת פידבק ב-12 השעות האחרונות');
+    }
     const delayMinutes =
       b.delayMinutes !== undefined && b.delayMinutes !== ''
         ? parseInt(b.delayMinutes)

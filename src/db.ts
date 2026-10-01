@@ -201,6 +201,29 @@ async function setOrgManagers(orgId: string, managers: OrgManager[]): Promise<vo
 
 // ─── Feedbacks ──────────────────────────────────────────────────────────────
 
+/**
+ * A customer who already has a feedback in play for this org — however it's
+ * going (still pending, mid-conversation, or fully resolved) — must not get
+ * a second one within the window. 'cancelled' and 'error' rows don't count:
+ * the customer never actually got a message out of those, so blocking a
+ * genuine retry would just be wrong.
+ */
+const DUPLICATE_WINDOW_MS = 12 * 60 * 60_000;
+
+export async function hasRecentFeedback(orgId: string, customerPhone: string): Promise<boolean> {
+  const cutoff = new Date(Date.now() - DUPLICATE_WINDOW_MS).toISOString();
+  const { data, error } = await supabase
+    .from('feedbacks')
+    .select('id')
+    .eq('org_id', orgId)
+    .eq('customer_phone', customerPhone)
+    .gte('created_at', cutoff)
+    .in('status', ['pending', 'sending', 'sent', 'completed'])
+    .limit(1);
+  if (error) fail('hasRecentFeedback', error);
+  return (data?.length ?? 0) > 0;
+}
+
 export async function createFeedback(
   orgId: string,
   customerPhone: string,

@@ -29,6 +29,11 @@ function supabaseHeaders() {
   };
 }
 async function insertStaleFeedback(orgId, phone, hoursAgo) {
+  // created_at is backdated too, not just sent_at/scheduled_at: a feedback
+  // truly abandoned days ago would have been CREATED days ago, and the
+  // 12h duplicate-prevention window keys off created_at ("since first
+  // received"). Leaving it at its real insert time would make this row look
+  // freshly received and block the scenario's own follow-up request.
   const sentAt = new Date(Date.now() - hoursAgo * 3600_000).toISOString();
   const { data } = await axios.post(
     `${SUPABASE_URL}/rest/v1/feedbacks`,
@@ -36,6 +41,7 @@ async function insertStaleFeedback(orgId, phone, hoursAgo) {
       org_id: orgId,
       customer_phone: phone,
       customer_name: 'שיחה נטושה',
+      created_at: sentAt,
       scheduled_at: sentAt,
       sent_at: sentAt,
       status: 'sent',
@@ -51,6 +57,12 @@ async function getFeedbackRow(id) {
     headers: supabaseHeaders(),
   });
   return data[0] ?? null;
+}
+async function deleteFeedbacksForPhone(orgId, phone) {
+  await axios.delete(
+    `${SUPABASE_URL}/rest/v1/feedbacks?org_id=eq.${orgId}&customer_phone=eq.${phone}`,
+    { headers: supabaseHeaders() }
+  );
 }
 
 const results = [];
@@ -184,6 +196,11 @@ async function main() {
       rated5.some((f) => f.customerPhone === '972521234567' && f.rating === 5));
 
     // ── Scenario C: owner image WITHOUT caption → asks for name ──
+    // Every ownerImage() call OCRs the same fixture, so this targets the same
+    // phone Scenario A already used — clear that (now fully resolved) row
+    // first, or the new 12h duplicate-prevention rule correctly refuses to
+    // schedule a second one and this scenario has nothing left to test.
+    await deleteFeedbacksForPhone(org.id, '972521234567');
     mock.sent.length = 0;
     await ownerImage(undefined);
     const askName = await waitFor(async () =>
@@ -418,6 +435,49 @@ async function main() {
     check('Unrelated text after resolution does NOT resend the greeting (no stale-row hijack)',
       !mock.sent.some((m) => m.to === CUSTOMER_STALE),
       JSON.stringify(mock.sent.map((m) => m.summary)));
+
+    // ── Scenario L: the same customer phone must not get a second feedback
+    // request within 12h of the first — a customer ordering twice in one
+    // evening shouldn't be asked to rate twice ──
+    const DUP_PHONE = '0500000097';
+    const DUP_PHONE_972 = '972500000097';
+    mock.sent.length = 0;
+    const dupFirst = await api('post', '/feedbacks', {
+      orgId: org.id, customerPhone: DUP_PHONE, customerName: 'לקוח כפול', delayMinutes: 60,
+    });
+    check('First request for a fresh phone is accepted', dupFirst.id > 0);
+
+    const dupSecond = await axios
+      .post(`${BOT}/api/feedbacks`, {
+        orgId: org.id, customerPhone: DUP_PHONE, customerName: 'לקוח כפול שוב', delayMinutes: 60,
+      }, { headers: { 'x-admin-key': ADMIN_KEY }, validateStatus: () => true });
+    check('Second request for the SAME phone within 12h is refused (admin API)',
+      dupSecond.status !== 200, `status=${dupSecond.status} body=${JSON.stringify(dupSecond.data)}`);
+
+    const dupRows = await api('get', `/feedbacks?orgId=${org.id}`);
+    check('Exactly one feedback row exists for the duplicate phone',
+      dupRows.filter((f) => f.customerPhone === DUP_PHONE_972).length === 1);
+
+    // Same rule, through the owner (WhatsApp) flow rather than the admin API:
+    // send the phone, wait for the bot's own "what's the name?" prompt (the
+    // webhook ACKs immediately and processes in the background, so firing
+    // the name right away would race the pending-state write), then the
+    // name — scheduleAndConfirm only runs once both are in hand.
+    mock.sent.length = 0;
+    await ownerText(DUP_PHONE);
+    const dupAskName = await waitFor(async () =>
+      mock.sent.find((m) => m.to === OWNER && m.summary.includes('מה שם הלקוח')));
+    check('Owner flow recognizes the phone and asks for a name', !!dupAskName);
+    await ownerText('שם כלשהו');
+    const dupOwnerReply = await waitFor(async () =>
+      mock.sent.find((m) => m.to === OWNER && m.summary.includes('כבר נשלחה הודעת פידבק')));
+    check('Owner flow also refuses a duplicate, with a clear reply', !!dupOwnerReply, dupOwnerReply?.summary);
+
+    // A DIFFERENT phone is unaffected — the rule is per customer, not global.
+    const dupOther = await api('post', '/feedbacks', {
+      orgId: org.id, customerPhone: '0500000098', customerName: 'לקוח אחר', delayMinutes: 60,
+    });
+    check('A different phone is not affected by the duplicate rule', dupOther.id > 0);
 
     // ── Stats ──
     const stats = await api('get', '/stats');

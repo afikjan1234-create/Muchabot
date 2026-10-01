@@ -2,6 +2,7 @@ import {
   createFeedback,
   getActiveFeedbackByPhone,
   getFeedbackByWamid,
+  hasRecentFeedback,
   updateFeedback,
 } from './db';
 import {
@@ -84,6 +85,13 @@ async function scheduleAndConfirm(
   customerName: string,
   order: OrderDetails
 ): Promise<string> {
+  // One feedback request per customer per 12h, regardless of how this order
+  // was entered (OCR, typed number, or the admin dashboard — all funnel
+  // through here or the equivalent admin check) — a customer who orders
+  // twice in one evening shouldn't be asked to rate twice.
+  if (await hasRecentFeedback(org.id, customerPhone)) {
+    return `⚠️ ל${customerName} (+${customerPhone}) כבר נשלחה הודעת פידבק ב-12 השעות האחרונות.\nלא נשלחה הודעה נוספת, כדי למנוע כפילות.`;
+  }
   const scheduledAt = new Date(Date.now() + org.feedbackDelayMinutes * 60_000);
   await createFeedback(org.id, customerPhone, customerName, scheduledAt, order);
   return `✅ נקלט: ${customerName} (+${customerPhone})\nהודעת פידבק מטעם ${org.name} תישלח ב-${formatTime(scheduledAt)}.`;
