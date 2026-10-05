@@ -4,8 +4,15 @@ import {
   listOrgs,
   releaseReportRun,
 } from './db';
-import { buildReportPdf, reportCaption, reportFileName, ReportPeriod } from './report';
-import { credentialsFor, managerPhones, sendDocument, uploadMedia } from './whatsapp';
+import {
+  buildReportPdf,
+  reportCaption,
+  reportFileName,
+  reportTemplateParams,
+  ReportPeriod,
+} from './report';
+import { credentialsFor, managerPhones, templateParam, uploadMedia } from './whatsapp';
+import { notifyManagers } from './notify';
 import { Org } from './types';
 
 /**
@@ -133,21 +140,26 @@ export async function sendReport(
     const filename = reportFileName(period, to);
     const mediaId = await uploadMedia(creds, pdf, filename, 'application/pdf');
 
-    // One upload, sent to every manager — and each recipient gets its own
-    // try/catch so one manager's lapsed 24h session doesn't sink delivery to
-    // the rest. Only retreat to 'failed' (and let the next poll retry) if
-    // NOBODY got it; if even one did, retrying would duplicate their copy.
-    let deliveredToAnyone = false;
-    for (const phone of managerPhones(org)) {
-      try {
-        await sendDocument(creds, phone, mediaId, filename, reportCaption(org, period, from, to));
-        deliveredToAnyone = true;
-      } catch (err: any) {
-        const detail = err?.response?.data?.error ?? err?.message ?? err;
-        console.error(`[reports] ${period} report for ${org.name} to ${phone} failed:`, JSON.stringify(detail));
-      }
+    // One upload, sent to every manager as the approved report template (its
+    // document header carries the PDF) — a plain document message would only
+    // reach managers who wrote to the bot in the last 24h. Each recipient is
+    // independent, so one manager's failure doesn't sink the rest. Only
+    // retreat to 'failed' (and let the next poll retry) if NOBODY got it; if
+    // even one did, retrying would duplicate their copy.
+    const caption = reportCaption(org, period, from, to);
+    const failures = await notifyManagers(org, {
+      kind: 'report',
+      template: 'manager_report',
+      params: reportTemplateParams(org, period, from, to).map((v) => templateParam(v)),
+      fallbackText: caption,
+      document: { id: mediaId, filename, caption },
+    });
+    for (const f of failures) {
+      console.error(`[reports] ${period} report for ${org.name} to ${f.phone} failed:`, f.detail);
     }
-    if (!deliveredToAnyone) throw new Error('report delivery failed for every manager phone');
+    if (failures.length >= managerPhones(org).length) {
+      throw new Error('report delivery failed for every manager phone');
+    }
 
     console.log(`[reports] Sent ${period} report for ${org.name} (${entries.length} rows)`);
     return 'sent';

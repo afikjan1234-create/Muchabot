@@ -10,9 +10,22 @@ function start(port) {
 
   const sent = []; // { to, type, summary, raw }
   let wamidCounter = 0;
+  // Template names Meta should refuse as "does not exist" — how a template
+  // that is still in review (or paused) behaves when the bot tries to use it.
+  const failTemplates = new Set();
 
   app.post('/v19.0/:phoneId/messages', (req, res) => {
     const b = req.body;
+    if (b.type === 'template' && failTemplates.has(b.template?.name)) {
+      console.log(`[mock] ✗ template ${b.template.name} → ${b.to} refused (132001)`);
+      return res.status(400).json({
+        error: {
+          message: '(#132001) Template name does not exist in the translation',
+          type: 'OAuthException',
+          code: 132001,
+        },
+      });
+    }
     let summary = '';
     if (b.type === 'text') summary = b.text?.body ?? '';
     else if (b.type === 'template') summary = `template:${b.template?.name} params:${JSON.stringify(b.template?.components)}`;
@@ -53,7 +66,7 @@ function start(port) {
   });
 
   const server = app.listen(port);
-  return { sent, uploads, server };
+  return { sent, uploads, server, failTemplates };
 }
 
 module.exports = { start };

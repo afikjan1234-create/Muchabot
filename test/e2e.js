@@ -238,7 +238,7 @@ async function main() {
     await customerListPick('972521234567', 'REASON_DELIVERY', '⏱️ זמן המשלוח', reasonList.wamid);
     // The alert must land on the reason pick — most customers stop there.
     const alert = await waitFor(async () =>
-      mock.sent.find((m) => m.to === '972500000002' && m.summary.includes('משוב שלילי')));
+      mock.sent.find((m) => m.to === '972500000002' && m.raw?.template?.name === 'manager_negative_alert'));
     check('Reason pick → manager alerted immediately', !!alert);
     check('Alert carries customer name', !!alert && alert.summary.includes('יוסי כהן'));
     check('Alert carries the rating', !!alert && alert.summary.includes('2/5'),
@@ -385,21 +385,24 @@ async function main() {
       (mock.uploads[mock.uploads.length - 1]?.bytes ?? 0) > 2000,
       `bytes=${mock.uploads[mock.uploads.length - 1]?.bytes}`);
 
+    // Reports reach managers as the approved report template — its document
+    // header carries the PDF — so they arrive even outside the 24h window.
+    const headerDocOf = (m) =>
+      m.raw?.template?.components?.find((c) => c.type === 'header')?.parameters?.[0]?.document;
     const doc = await waitFor(async () =>
-      mock.sent.find((m) => m.type === 'document' && m.to === '972500000002'));
-    check('Report delivered to the manager as a document', !!doc, doc && doc.summary);
+      mock.sent.find((m) => m.to === '972500000002' && m.raw?.template?.name === 'manager_report'));
+    check('Report delivered to the manager as the report template', !!doc, doc && doc.summary.slice(0, 80));
     check('Report filename names the period and date',
-      !!doc && /report-daily-\d{4}-\d{2}-\d{2}\.pdf/.test(doc.raw?.document?.filename ?? ''),
-      doc?.raw?.document?.filename);
-    check('Report caption names the restaurant',
-      !!doc && doc.raw?.document?.caption?.includes('מסעדת בדיקה'));
+      !!doc && /report-daily-\d{4}-\d{2}-\d{2}\.pdf/.test(headerDocOf(doc)?.filename ?? ''),
+      headerDocOf(doc)?.filename);
+    check('Report template names the restaurant', !!doc && doc.summary.includes('מסעדת בדיקה'));
 
     // A weekly range must be accepted and labelled as such.
     const weekly = await api('post', `/orgs/${org.id}/report`, { period: 'weekly' });
     check('Weekly report also sends', weekly.result === 'sent', JSON.stringify(weekly));
     const weeklyDoc = await waitFor(async () =>
-      mock.sent.find((m) => m.type === 'document' && (m.raw?.document?.filename ?? '').includes('weekly')));
-    check('Weekly report filename marked weekly', !!weeklyDoc, weeklyDoc?.raw?.document?.filename);
+      mock.sent.find((m) => m.raw?.template?.name === 'manager_report' && (headerDocOf(m)?.filename ?? '').includes('weekly')));
+    check('Weekly report filename marked weekly', !!weeklyDoc, headerDocOf(weeklyDoc)?.filename);
 
     // ── Scenario K: an abandoned old conversation must never hijack a new
     // one for the same phone number (the exact bug seen in production:
@@ -478,6 +481,109 @@ async function main() {
       orgId: org.id, customerPhone: '0500000098', customerName: 'לקוח אחר', delayMinutes: 60,
     });
     check('A different phone is not affected by the duplicate rule', dupOther.id > 0);
+
+    // ── Scenario M: notices to managers. Managers don't write to the bot in
+    // order to receive something, so a plain text to them only lands inside
+    // WhatsApp's 24h window — which is how a manager silently stopped
+    // hearing from the bot for days. Every notice is an approved template
+    // instead, with plain text only as a fallback for a template that isn't
+    // usable yet. ──
+    const bodyParamsOf = (m) =>
+      m?.raw?.template?.components?.find((c) => c.type === 'body')?.parameters?.map((p) => p.text) ?? [];
+    const M_PHONE = '0500000095';
+    const M_PHONE_972 = '972500000095';
+    mock.sent.length = 0;
+    await api('post', '/feedbacks', { orgId: org.id, customerPhone: M_PHONE, customerName: 'לקוח M', delayMinutes: 0 });
+    const tplM = await waitFor(async () =>
+      mock.sent.find((m) => m.type === 'template' && m.to === M_PHONE_972), 20000);
+    await customerButton(M_PHONE_972, 'לא היה טוב', tplM.wamid);
+    const listM = await waitFor(async () =>
+      mock.sent.find((m) => m.to === M_PHONE_972 && m.type === 'interactive'));
+    await customerListPick(M_PHONE_972, 'REASON_PACKAGING', '📦 האריזה', listM.wamid);
+    const alertM = await waitFor(async () =>
+      mock.sent.find((m) => m.to === '972500000002' && m.raw?.template?.name === 'manager_negative_alert'));
+    check('Manager alert goes out as the approved template', !!alertM);
+    check('Alert template fills all seven parameters', bodyParamsOf(alertM).length === 7,
+      JSON.stringify(bodyParamsOf(alertM)));
+    check('No alert parameter is empty (WhatsApp rejects empty ones)',
+      bodyParamsOf(alertM).every((p) => p.trim().length > 0));
+
+    // The reason list stays tappable after a pick; a second tap arrives as a
+    // bare row id, which used to be stored — and forwarded — as the complaint.
+    await customerListPick(M_PHONE_972, 'REASON_FOOD', '🍣 האוכל', listM.wamid);
+    await sleep(1500);
+    const afterTap = (await api('get', `/feedbacks?orgId=${org.id}`)).find((f) => f.customerPhone === M_PHONE_972);
+    check('A second reason tap changes the reason, not the complaint',
+      afterTap?.reason === 'האוכל' && !afterTap?.complaint,
+      JSON.stringify({ reason: afterTap?.reason, complaint: afterTap?.complaint }));
+
+    // Newlines and tabs in a customer's note would get the whole template refused.
+    mock.sent.length = 0;
+    await customerText(M_PHONE_972, 'שורה ראשונה\nשורה שנייה\t\tעם טאב');
+    const noteM = await waitFor(async () =>
+      mock.sent.find((m) => m.to === '972500000002' && m.raw?.template?.name === 'manager_customer_note'));
+    check('Customer note reaches the manager as the note template', !!noteM);
+    check('Note parameters contain no newline or tab (WhatsApp rejects those)',
+      bodyParamsOf(noteM).every((p) => !/[\n\t]/.test(p)), JSON.stringify(bodyParamsOf(noteM)));
+    check('The note text itself survives sanitising',
+      bodyParamsOf(noteM).some((p) => p.includes('שורה ראשונה') && p.includes('שורה שנייה')));
+
+    // A template that isn't usable yet (still in review, paused) must not mean silence.
+    const F_PHONE = '0500000096';
+    const F_PHONE_972 = '972500000096';
+    mock.failTemplates.add('manager_negative_alert');
+    mock.sent.length = 0;
+    await api('post', '/feedbacks', { orgId: org.id, customerPhone: F_PHONE, customerName: 'לקוח F', delayMinutes: 0 });
+    const tplF = await waitFor(async () =>
+      mock.sent.find((m) => m.type === 'template' && m.to === F_PHONE_972), 20000);
+    await customerButton(F_PHONE_972, 'לא היה טוב', tplF.wamid);
+    const listF = await waitFor(async () =>
+      mock.sent.find((m) => m.to === F_PHONE_972 && m.type === 'interactive'));
+    await customerListPick(F_PHONE_972, 'REASON_MISSING', '❌ משהו היה חסר', listF.wamid);
+    const fallbackAlert = await waitFor(async () =>
+      mock.sent.find((m) => m.to === '972500000002' && m.type === 'text' && m.summary.includes('משוב שלילי')));
+    check('Template unavailable → the alert still reaches the manager as plain text', !!fallbackAlert);
+    mock.failTemplates.delete('manager_negative_alert');
+
+    mock.failTemplates.add('manager_report');
+    mock.sent.length = 0;
+    const fallbackReport = await api('post', `/orgs/${org.id}/report`, { period: 'daily' });
+    check('Report still sends when its template is unavailable', fallbackReport.result === 'sent');
+    const fallbackDoc = await waitFor(async () =>
+      mock.sent.find((m) => m.type === 'document' && m.to === '972500000002'));
+    check('Report falls back to a plain document message', !!fallbackDoc);
+    mock.failTemplates.delete('manager_report');
+
+    // Settings changes reach managers as a template too.
+    mock.sent.length = 0;
+    await api('put', `/orgs/${org.id}`, { greetingEmoji: '🍱' });
+    const settingsNotice = await waitFor(async () =>
+      mock.sent.find((m) => m.to === '972500000002' && m.raw?.template?.name === 'manager_settings_update'));
+    check('A settings change notifies the manager as a template',
+      !!settingsNotice && bodyParamsOf(settingsNotice).some((p) => p.includes("אימוג'י")),
+      JSON.stringify(bodyParamsOf(settingsNotice)));
+    await api('put', `/orgs/${org.id}`, { greetingEmoji: '🍣' });
+
+    // Every notice is logged, so "why didn't I get it" has an answer.
+    const notices = await api('get', `/notifications?orgId=${org.id}`);
+    check('Delivery log records the template alert',
+      notices.some((n) => n.kind === 'negative_alert' && n.via === 'template' && n.toPhone === '972500000002'));
+    check('Delivery log records the plain-text fallback',
+      notices.some((n) => n.kind === 'negative_alert' && n.via === 'text'));
+
+    // WhatsApp accepts a send first and reports non-delivery afterwards.
+    const accepted = notices.find((n) => n.kind === 'negative_alert' && n.via === 'template');
+    await axios.post(`${BOT}/webhook`, {
+      object: 'whatsapp_business_account',
+      entry: [{ changes: [{ value: { statuses: [{
+        id: accepted.wamid, status: 'failed', recipient_id: accepted.toPhone,
+        errors: [{ code: 131047, title: 'Re-engagement message' }],
+      }] } }] }],
+    });
+    const failedNotice = await waitFor(async () =>
+      (await api('get', `/notifications?orgId=${org.id}`)).find((n) => n.wamid === accepted.wamid && n.status === 'failed'));
+    check('A failed delivery status marks the notice failed, with Meta\'s reason',
+      !!failedNotice && (failedNotice.errorDetail ?? '').includes('131047'), failedNotice?.errorDetail);
 
     // ── Stats ──
     const stats = await api('get', '/stats');

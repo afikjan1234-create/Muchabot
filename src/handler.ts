@@ -10,9 +10,10 @@ import {
   sendListMessage,
   downloadMedia,
   credentialsFor,
-  managerPhones,
   restaurantLabel,
+  templateParam,
 } from './whatsapp';
+import { ManagerNotice, notifyManagers } from './notify';
 import {
   extractCustomerFromImage,
   formatIsraeliPhone,
@@ -286,36 +287,58 @@ async function askForReason(
   });
 }
 
-/**
- * Manager-facing alerts are plain session messages, which WhatsApp only
- * allows within 24h of that phone's OWN last message to the bot — unlike the
- * customer replies sent right alongside each of these calls, which are
- * always safe since the customer just messaged us to trigger this handler. A
- * manager who doesn't chat with the bot daily makes every alert to them fail
- * outright, and an uncaught failure here used to abort the rest of the
- * function — so the customer's own reply never went out and their complaint
- * effectively vanished. This always lets the customer-facing flow continue
- * and records the failure instead of losing it.
- */
-async function notifyManager(
-  creds: WhatsAppCredentials,
+function alertNotice(
   org: Org,
-  feedbackId: number,
-  text: string
-): Promise<void> {
-  const failures: string[] = [];
-  for (const phone of managerPhones(org)) {
-    try {
-      await sendTextMessage(creds, phone, text);
-    } catch (err: any) {
-      const detail = JSON.stringify(err?.response?.data?.error ?? err?.message ?? err);
-      console.error(`[handler] Manager alert to ${phone} failed for #${feedbackId}:`, detail);
-      failures.push(`${phone}: ${detail}`);
-    }
-  }
+  feedback: Feedback,
+  rating: number | null,
+  reason: string | null
+): ManagerNotice {
+  return {
+    kind: 'negative_alert',
+    template: 'manager_negative_alert',
+    params: [
+      org.name,
+      feedback.customerName,
+      formatIsraeliPhone(feedback.customerPhone),
+      feedback.orderNumber,
+      feedback.orderAmount,
+      rating ? `${rating}/5` : null,
+      reason,
+    ].map((v) => templateParam(v)),
+    fallbackText: managerAlert(org, feedback, rating, reason),
+  };
+}
+
+function noteNotice(org: Org, feedback: Feedback, note: string): ManagerNotice {
+  return {
+    kind: 'customer_note',
+    template: 'manager_customer_note',
+    params: [
+      org.name,
+      feedback.customerName,
+      formatIsraeliPhone(feedback.customerPhone),
+      note,
+    ].map((v) => templateParam(v)),
+    fallbackText: `📝 [${org.name}] הערה מהלקוח ${feedback.customerName || MISSING} (${formatIsraeliPhone(feedback.customerPhone)}):\n\n"${note}"`,
+  };
+}
+
+/**
+ * Tells every manager, and never lets that get in the way of the customer.
+ * The customer-facing replies sent right alongside each call are always safe
+ * (the customer just messaged us), whereas reaching a manager can fail; an
+ * uncaught failure here once aborted the rest of the handler, so the
+ * customer's own reply never went out and their complaint effectively
+ * vanished. Failures are recorded on the feedback row instead.
+ */
+async function notifyManager(org: Org, feedbackId: number, notice: ManagerNotice): Promise<void> {
+  const failures = await notifyManagers(org, { ...notice, feedbackId });
   if (failures.length) {
+    for (const f of failures) {
+      console.error(`[handler] Manager alert to ${f.phone} failed for #${feedbackId}:`, f.detail);
+    }
     await updateFeedback(feedbackId, {
-      errorDetail: `manager alert failed: ${failures.join('; ')}`.slice(0, 500),
+      errorDetail: `manager alert failed: ${failures.map((f) => `${f.phone}: ${f.detail}`).join('; ')}`.slice(0, 500),
     });
   }
 }
@@ -409,6 +432,11 @@ export async function handleCustomerMessage(
 
   // ── Step 2 (ratings 1-3): which aspect went wrong ──
   if (feedback.conversationState === 'waiting_reason') {
+    // The earlier rating list stays tappable. A stray tap on it is a bare
+    // row id, not something the customer typed — never treat it as their
+    // explanation.
+    if (/^RATING_[1-5]$/.test(payload.trim())) return;
+
     const rating = feedback.rating;
     const reason = parseReason(payload);
     const reasonLabel = reason ? reason.title : null;
@@ -418,9 +446,9 @@ export async function handleCustomerMessage(
       ...(reasonLabel ? { reason: reasonLabel } : {}),
     });
     console.log(
-      `[handler] #${feedback.id} (${customerPhone}) reason picked -> alerting manager ${org.managerPhone}`
+      `[handler] #${feedback.id} (${customerPhone}) reason picked -> alerting managers of ${org.name}`
     );
-    await notifyManager(creds, org, feedback.id, managerAlert(org, feedback, rating, reasonLabel));
+    await notifyManager(org, feedback.id, alertNotice(org, feedback, rating, reasonLabel));
 
     if (reason) {
       await sendTextMessage(creds, customerPhone, 'אם תרצה, ספר לנו בקצרה מה קרה.');
@@ -429,7 +457,7 @@ export async function handleCustomerMessage(
 
     // Someone who types instead of picking has already said what went wrong —
     // take it as the explanation rather than asking the same question again.
-    await notifyManager(creds, org, feedback.id, `📝 [${org.name}] הלקוח הוסיף:\n\n"${payload}"`);
+    await notifyManager(org, feedback.id, noteNotice(org, feedback, payload));
     await sendTextMessage(
       creds,
       customerPhone,
@@ -445,6 +473,18 @@ export async function handleCustomerMessage(
 
   // ── Step 3: the optional free-text note ──
   if (feedback.conversationState === 'waiting_note') {
+    // The reason list stays tappable after a pick, so a second tap arrives as
+    // a bare row id ("REASON_FOOD"). That's a change of mind, not the note —
+    // recording it as one is how a manager ended up being told the customer's
+    // complaint was "REASON_FOOD".
+    const tapped = payload.trim();
+    if (/^REASON_[A-Z_]+$/.test(tapped)) {
+      const changed = parseReason(tapped);
+      if (changed) await updateFeedback(feedback.id, { reason: changed.title });
+      return;
+    }
+    if (/^RATING_[1-5]$/.test(tapped)) return;
+
     const negative = (feedback.rating ?? 0) <= NEGATIVE_RATING_MAX;
     await updateFeedback(feedback.id, {
       status: 'completed',
@@ -455,12 +495,7 @@ export async function handleCustomerMessage(
     if (negative) {
       // The manager already has the alert; this is the detail they were told
       // might follow.
-      await notifyManager(
-        creds,
-        org,
-        feedback.id,
-        `📝 [${org.name}] הערה מהלקוח ${feedback.customerName || MISSING} (${formatIsraeliPhone(feedback.customerPhone)}):\n\n"${payload}"`
-      );
+      await notifyManager(org, feedback.id, noteNotice(org, feedback, payload));
       await sendTextMessage(
         creds,
         customerPhone,

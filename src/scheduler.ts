@@ -1,11 +1,6 @@
 import { claimDueFeedbacks, resetStuckSending, updateFeedback } from './db';
-import {
-  sendFeedbackTemplate,
-  sendTextMessage,
-  credentialsFor,
-  managerPhones,
-  restaurantLabel,
-} from './whatsapp';
+import { sendFeedbackTemplate, credentialsFor, restaurantLabel, templateParam } from './whatsapp';
+import { notifyManagers } from './notify';
 import { config } from './config';
 import { Feedback } from './types';
 import { checkReports } from './report-scheduler';
@@ -36,19 +31,18 @@ async function sendOne(feedback: Feedback): Promise<void> {
     console.error(`[scheduler] Failed to send #${feedback.id} to ${feedback.customerPhone}:`, detail);
     await updateFeedback(feedback.id, { status: 'error', errorDetail: detail.slice(0, 500) });
 
-    // Best-effort: tell every manager the message never went out. Each phone
-    // gets its own try/catch so one manager's failure (e.g. their own 24h
-    // session window has lapsed) doesn't stop the others from being told.
-    for (const phone of managerPhones(org)) {
-      try {
-        await sendTextMessage(
-          creds,
-          phone,
-          `⚠️ [${org.name}] שליחת הודעת פידבק ל${feedback.customerName || feedback.customerPhone} (+${feedback.customerPhone}) נכשלה. בדוק שהמספר תקין ונסה שוב דרך דף הניהול.`
-        );
-      } catch {
-        // Manager notification is best-effort only
-      }
+    // Best-effort: tell every manager the message never went out.
+    try {
+      const who = feedback.customerName || feedback.customerPhone;
+      await notifyManagers(org, {
+        kind: 'send_failed',
+        template: 'manager_send_failed',
+        params: [org.name, who, feedback.customerPhone].map((v) => templateParam(v)),
+        fallbackText: `⚠️ [${org.name}] שליחת הודעת פידבק ל${who} (+${feedback.customerPhone}) נכשלה. בדוק שהמספר תקין ונסה שוב דרך דף הניהול.`,
+        feedbackId: feedback.id,
+      });
+    } catch (notifyErr) {
+      console.error('[scheduler] Manager failure notice failed:', notifyErr);
     }
   }
 }

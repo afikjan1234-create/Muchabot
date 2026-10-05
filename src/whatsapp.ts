@@ -126,6 +126,58 @@ export async function sendFeedbackTemplate(
 }
 
 /**
+ * Sends an approved template with plain-text body parameters and, optionally,
+ * a document header. Unlike every free-form message, a template can be sent
+ * to anyone at any time — it is the only way for the business to reach a
+ * manager who hasn't messaged the bot in the last 24 hours.
+ */
+export async function sendTemplateMessage(
+  creds: WhatsAppCredentials,
+  to: string,
+  templateName: string,
+  bodyParams: string[],
+  document?: { id: string; filename: string }
+): Promise<string | null> {
+  const components: unknown[] = [];
+  if (document) {
+    components.push({
+      type: 'header',
+      parameters: [{ type: 'document', document: { id: document.id, filename: document.filename } }],
+    });
+  }
+  components.push({
+    type: 'body',
+    parameters: bodyParams.map((text) => ({ type: 'text', text })),
+  });
+
+  const { data } = await axios.post(
+    messagesUrl(creds.phoneNumberId),
+    {
+      messaging_product: 'whatsapp',
+      to,
+      type: 'template',
+      template: { name: templateName, language: { code: 'he' }, components },
+    },
+    { headers: authHeaders(creds.token) }
+  );
+  return data?.messages?.[0]?.id ?? null;
+}
+
+/**
+ * Makes a value safe to use as a template parameter, which WhatsApp rejects
+ * outright if it is empty, contains a newline or tab, or has four or more
+ * spaces in a row. A customer's free-text note is exactly the kind of input
+ * that trips all three.
+ */
+export function templateParam(value: string | number | null | undefined, max = 800): string {
+  const cleaned = String(value ?? '')
+    .replace(/[\r\n\t]+/g, ' ')
+    .replace(/ {4,}/g, '   ')
+    .trim();
+  return Array.from(cleaned || '—').slice(0, max).join('');
+}
+
+/**
  * Sends an interactive list (session message — only valid within the 24h
  * window opened by a customer message).
  *

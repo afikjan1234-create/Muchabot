@@ -430,6 +430,101 @@ export async function claimReportRun(
   fail('claimReportRun', error);
 }
 
+// ─── Manager-notification delivery log ──────────────────────────────────────
+// WhatsApp accepts a send (and returns a wamid) before it knows whether the
+// message can actually be delivered — a notice to a manager whose 24h window
+// has lapsed "succeeds" at the API and fails afterwards, via a status
+// webhook. Without a record of what we sent, that failure was invisible: the
+// manager just stopped hearing from the bot, for days, with no trace.
+
+export type OutboundKind =
+  | 'negative_alert'
+  | 'customer_note'
+  | 'report'
+  | 'settings_update'
+  | 'send_failed'
+  | 'welcome';
+
+export interface OutboundNotice {
+  wamid: string;
+  orgId: string;
+  toPhone: string;
+  kind: OutboundKind;
+  /** 'template' works at any time; 'text' only inside the manager's 24h window. */
+  via: 'template' | 'text';
+  feedbackId?: number;
+}
+
+export interface OutboundRow {
+  wamid: string;
+  orgId: string;
+  toPhone: string;
+  kind: string;
+  via: string;
+  feedbackId: number | null;
+  status: 'sent' | 'delivered' | 'failed';
+  errorDetail: string | null;
+  createdAt: string;
+}
+
+/** Best-effort: a logging failure must never break the notification itself. */
+export async function recordOutbound(n: OutboundNotice): Promise<void> {
+  const { error } = await supabase.from('outbound_messages').insert({
+    wamid: n.wamid,
+    org_id: n.orgId,
+    to_phone: n.toPhone,
+    kind: n.kind,
+    via: n.via,
+    feedback_id: n.feedbackId ?? null,
+  });
+  if (error) console.error('[db] recordOutbound failed:', error.message);
+}
+
+/** True when the wamid was one of our manager notifications. */
+export async function markOutboundFailed(wamid: string, detail: string): Promise<boolean> {
+  const { data, error } = await supabase
+    .from('outbound_messages')
+    .update({ status: 'failed', error_detail: detail.slice(0, 500), updated_at: new Date().toISOString() })
+    .eq('wamid', wamid)
+    .select('wamid');
+  if (error) {
+    console.error('[db] markOutboundFailed failed:', error.message);
+    return false;
+  }
+  return (data?.length ?? 0) > 0;
+}
+
+export async function markOutboundDelivered(wamid: string): Promise<void> {
+  const { error } = await supabase
+    .from('outbound_messages')
+    .update({ status: 'delivered', updated_at: new Date().toISOString() })
+    .eq('wamid', wamid)
+    .eq('status', 'sent');
+  if (error) console.error('[db] markOutboundDelivered failed:', error.message);
+}
+
+export async function listOutbound(filters: { orgId?: string; limit?: number }): Promise<OutboundRow[]> {
+  let query = supabase
+    .from('outbound_messages')
+    .select('*')
+    .order('created_at', { ascending: false })
+    .limit(filters.limit ?? 100);
+  if (filters.orgId) query = query.eq('org_id', filters.orgId);
+  const { data, error } = await query;
+  if (error) fail('listOutbound', error);
+  return (data ?? []).map((r: any) => ({
+    wamid: r.wamid,
+    orgId: r.org_id,
+    toPhone: r.to_phone,
+    kind: r.kind,
+    via: r.via,
+    feedbackId: r.feedback_id ?? null,
+    status: r.status,
+    errorDetail: r.error_detail ?? null,
+    createdAt: r.created_at,
+  }));
+}
+
 /**
  * Claims the right to process one inbound webhook message, by wamid. Meta
  * guarantees at-least-once delivery and does redeliver in practice (slow

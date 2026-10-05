@@ -129,6 +129,17 @@
       <tbody></tbody>
     </table></div>
   </section>
+
+  <section>
+    <h2>התראות למנהלים <button class="btn-ghost btn-sm" onclick="loadNotices()">🔄 רענון</button></h2>
+    <p class="muted" style="margin-bottom:10px">כל התראה שהבוט שלח למנהל, והאם היא באמת הגיעה. "נכשל" או ערוץ "טקסט" אומרים בדרך כלל שהמנהל לא כתב לבוט ב-24 השעות האחרונות.</p>
+    <div style="overflow-x:auto"><table id="noticeTable">
+      <thead><tr>
+        <th>זמן</th><th>מסעדה</th><th>נמען</th><th>סוג</th><th>ערוץ</th><th>סטטוס</th><th>פירוט</th>
+      </tr></thead>
+      <tbody></tbody>
+    </table></div>
+  </section>
 </main>
 </div>
 
@@ -465,8 +476,52 @@ async function saveFeedback() {
   } catch (e) { toast(e.message, true); }
 }
 
+// ─── Manager notices ───────────────────────────────────
+const KIND_HE = { negative_alert: 'משוב שלילי', customer_note: 'הערת לקוח', report: 'דוח', settings_update: 'שינוי הגדרות', send_failed: 'כשל שליחה', welcome: 'ברוכים הבאים' };
+const NOTICE_STATUS_HE = { sent: 'נשלח', delivered: 'נמסר', failed: 'נכשל' };
+const NOTICE_STATUS_CLS = { sent: 'b-sent', delivered: 'b-completed', failed: 'b-error' };
+
+function managerNameFor(phone) {
+  for (const o of orgs) {
+    if (o.managerPhone === phone) return o.managerName || '';
+    const m = (o.managers || []).find(x => x.phone === phone);
+    if (m) return m.name || '';
+  }
+  return '';
+}
+
+function noticeFailureHint(detail) {
+  if (!detail) return '';
+  if (detail.includes('131047')) return 'חלון 24 השעות נסגר — המנהל לא כתב לבוט ב-24 השעות האחרונות';
+  if (detail.includes('131026')) return 'המספר לא יכול לקבל הודעות וואטסאפ';
+  return detail;
+}
+
+async function loadNotices() {
+  const rows = await api('/notifications?limit=100');
+  const tbody = $('noticeTable').querySelector('tbody');
+  if (!rows.length) { tbody.innerHTML = '<tr><td colspan="7" class="empty">עוד לא נשלחו התראות למנהלים</td></tr>'; return; }
+  const orgName = id => orgs.find(o => o.id === id)?.name || '';
+  tbody.innerHTML = rows.map(n => {
+    const who = managerNameFor(n.toPhone);
+    const channel = n.via === 'template'
+      ? 'תבנית'
+      : '<span title="הודעת טקסט רגילה — מגיעה רק אם המנהל כתב לבוט ב-24 השעות האחרונות">טקסט ⚠️</span>';
+    return `
+    <tr>
+      <td class="muted">${fmtDate(n.createdAt)}</td>
+      <td>${esc(orgName(n.orgId))}</td>
+      <td>${who ? esc(who) + '<br>' : ''}<span dir="ltr">+${esc(n.toPhone)}</span></td>
+      <td>${esc(KIND_HE[n.kind] || n.kind)}</td>
+      <td>${channel}</td>
+      <td><span class="badge ${NOTICE_STATUS_CLS[n.status] || ''}">${NOTICE_STATUS_HE[n.status] || esc(n.status)}</span></td>
+      <td style="max-width:260px">${esc(noticeFailureHint(n.errorDetail)) || '—'}</td>
+    </tr>`;
+  }).join('');
+}
+
 // ─── Boot ──────────────────────────────────────────────
-function refreshAll() { loadStats(); loadOrgs().then(loadFeedbacks); }
+function refreshAll() { loadStats(); loadOrgs().then(() => { loadFeedbacks(); loadNotices(); }); }
 
 $('loginKey').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
 

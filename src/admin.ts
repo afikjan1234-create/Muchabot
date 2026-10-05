@@ -10,13 +10,15 @@ import {
   hasRecentFeedback,
   listFeedbacks,
   listOrgs,
+  listOutbound,
   updateOrg,
 } from './db';
 import { formatIsraeliPhone, looksLikePhone } from './ocr';
 import { FeedbackStatus, Org, OrgManager, OrgPhone, OrgPlan } from './types';
 import { businessDayFor, localNow, sendReport } from './report-scheduler';
 import { ReportPeriod } from './report';
-import { credentialsFor, managerPhones, sendTextMessage } from './whatsapp';
+import { managerPhones, templateParam } from './whatsapp';
+import { notifyManagers } from './notify';
 
 function parsePlan(raw: unknown): OrgPlan | undefined {
   if (raw === undefined) return undefined;
@@ -83,25 +85,26 @@ function describeOrgChanges(before: Org, after: Org): string[] {
  * Best-effort notice to whoever could receive an alert either before or
  * after this edit — so a manager who was just removed still hears that they
  * no longer will, and one newly added hears about the change that added
- * them. Like every other manager-facing text, this only actually lands if
- * that phone has messaged the bot in the last 24h (WhatsApp's session
- * window) — a manager who has never texted the bot won't receive it, only
- * see it logged.
+ * them. Sent as an approved template, so it reaches managers regardless of
+ * whether they've written to the bot recently.
  */
 async function notifyOrgChanged(before: Org, after: Org): Promise<void> {
   const changes = describeOrgChanges(before, after);
   if (changes.length === 0) return;
-  const creds = credentialsFor(after);
-  const text = `⚙️ [${after.name}] עודכנו הגדרות הבוט:\n\n${changes.map((c) => `• ${c}`).join('\n')}`;
-  for (const phone of new Set([...managerPhones(before), ...managerPhones(after)])) {
-    try {
-      await sendTextMessage(creds, phone, text);
-    } catch (err) {
-      console.error(
-        `[admin] Settings-change notice to ${phone} failed:`,
-        err instanceof Error ? err.message : err
-      );
-    }
+  const recipients = [...new Set([...managerPhones(before), ...managerPhones(after)])];
+  try {
+    await notifyManagers(
+      after,
+      {
+        kind: 'settings_update',
+        template: 'manager_settings_update',
+        params: [templateParam(after.name), templateParam(changes.join(' | '))],
+        fallbackText: `⚙️ [${after.name}] עודכנו הגדרות הבוט:\n\n${changes.map((c) => `• ${c}`).join('\n')}`,
+      },
+      recipients
+    );
+  } catch (err) {
+    console.error('[admin] Settings-change notice failed:', err instanceof Error ? err.message : err);
   }
 }
 
@@ -191,17 +194,17 @@ adminRouter.post(
       parseManagers(b.managers)
     );
 
-    // Best-effort welcome — only actually lands once a manager has texted
-    // this WhatsApp number at least once (see notifyOrgChanged above); until
-    // then it's a no-op logged to the console, not a failure worth surfacing.
-    const creds = credentialsFor(org);
-    const welcome = `🎉 הבוט הוגדר בהצלחה עבור ${org.name}!\nמכאן תקבל/י התראות על ביקורות שליליות ודוחות תקופתיים.`;
-    for (const phone of managerPhones(org)) {
-      try {
-        await sendTextMessage(creds, phone, welcome);
-      } catch (err) {
-        console.error(`[admin] Welcome notice to ${phone} failed:`, err instanceof Error ? err.message : err);
-      }
+    // Best-effort welcome, as a template so it reaches managers who have
+    // never written to this number.
+    try {
+      await notifyManagers(org, {
+        kind: 'welcome',
+        template: 'manager_welcome',
+        params: [templateParam(org.name)],
+        fallbackText: `🎉 הבוט הוגדר בהצלחה עבור ${org.name}!\nמעכשיו תקבל/י כאן התראות על ביקורות שליליות ודוחות תקופתיים.`,
+      });
+    } catch (err) {
+      console.error('[admin] Welcome notice failed:', err instanceof Error ? err.message : err);
     }
 
     res.json(org);
@@ -317,6 +320,19 @@ adminRouter.post(
     const scheduledAt = new Date(Date.now() + delayMinutes * 60_000);
     const feedback = await createFeedback(org.id, phone, String(b.customerName ?? ''), scheduledAt);
     res.json(feedback);
+  })
+);
+
+/** Recent notices sent to managers, with whether each actually arrived. */
+adminRouter.get(
+  '/notifications',
+  handle(async (req, res) => {
+    res.json(
+      await listOutbound({
+        orgId: req.query.orgId ? String(req.query.orgId) : undefined,
+        limit: req.query.limit ? parseInt(String(req.query.limit)) : 100,
+      })
+    );
   })
 );
 

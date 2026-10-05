@@ -9,6 +9,8 @@ import {
   getActiveFeedbackByPhone,
   getFeedbackByWamid,
   getOrgByOwnerPhone,
+  markOutboundDelivered,
+  markOutboundFailed,
   updateFeedback,
 } from './db';
 import { sendTextMessage, credentialsFor } from './whatsapp';
@@ -106,10 +108,24 @@ async function processMessage(message: any): Promise<void> {
  * row just sits at status 'sent' with no way to tell the two apart.
  */
 async function processStatus(status: any): Promise<void> {
+  if (status?.status === 'delivered') {
+    await markOutboundDelivered(status.id);
+    return;
+  }
   if (status?.status !== 'failed') return;
+
+  const detail = JSON.stringify(status.errors ?? status);
+
+  // A notice to a manager (alert, report, ...) rather than a customer's
+  // message. These fail quietly when the manager's 24h window has lapsed —
+  // recording it is what makes "why am I not getting alerts" answerable.
+  if (await markOutboundFailed(status.id, detail)) {
+    console.error(`[webhook] Manager notice ${status.id} to ${status.recipient_id} failed:`, detail);
+    return;
+  }
+
   const feedback = await getFeedbackByWamid(status.id);
   if (!feedback) return;
-  const detail = JSON.stringify(status.errors ?? status);
   console.error(`[webhook] Delivery failed for feedback #${feedback.id} (${feedback.customerPhone}):`, detail);
   await updateFeedback(feedback.id, { status: 'error', errorDetail: detail.slice(0, 500) });
 }

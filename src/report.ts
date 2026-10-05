@@ -374,6 +374,17 @@ export function reportFileName(period: ReportPeriod, to: string): string {
   return `report-${period}-${to}.pdf`;
 }
 
+/** Body parameters of the `manager_report` template: report title, restaurant, date range. */
+export function reportTemplateParams(
+  org: Org,
+  period: ReportPeriod,
+  from: string,
+  to: string
+): string[] {
+  const range = from === to ? displayDate(to) : `${displayDate(from)} - ${displayDate(to)}`;
+  return [PERIOD_TITLE[period], org.name, range];
+}
+
 export function reportCaption(org: Org, period: ReportPeriod, from: string, to: string): string {
   const range =
     from === to ? displayDate(to) : `${displayDate(from)} - ${displayDate(to)}`;
