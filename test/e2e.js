@@ -194,6 +194,9 @@ async function main() {
     const rated5 = await api('get', `/feedbacks?orgId=${org.id}`);
     check('Rating 5 stored on the feedback row',
       rated5.some((f) => f.customerPhone === '972521234567' && f.rating === 5));
+    check('Caption "דנה לוי" is stored as the first name "דנה"',
+      rated5.some((f) => f.customerPhone === '972521234567' && f.customerName === 'דנה'),
+      JSON.stringify(rated5.filter((f) => f.customerPhone === '972521234567').map((f) => f.customerName)));
 
     // ── Scenario C: owner image WITHOUT caption → asks for name ──
     // Every ownerImage() call OCRs the same fixture, so this targets the same
@@ -209,10 +212,13 @@ async function main() {
 
     // owner replies with a name — but this schedules for OCR phone again;
     // to target CUSTOMER_A instead, we use the manual text-entry flow later.
+    // A full name typed by the owner is kept as its first name only.
     await ownerText('יוסי כהן');
     const confirmC = await waitFor(async () =>
-      mock.sent.find((m) => m.to === OWNER && m.summary.includes('נקלט') && m.summary.includes('יוסי כהן')));
+      mock.sent.find((m) => m.to === OWNER && m.summary.includes('נקלט') && m.summary.includes('יוסי')));
     check('Owner provides name → feedback scheduled', !!confirmC);
+    check('Typed full name "יוסי כהן" is confirmed as the first name only',
+      !!confirmC && !confirmC.summary.includes('כהן'), confirmC?.summary?.slice(0, 60));
 
     const templateC = await waitFor(async () =>
       mock.sent.filter((m) => m.type === 'template').length >= 1 &&
@@ -240,7 +246,8 @@ async function main() {
     const alert = await waitFor(async () =>
       mock.sent.find((m) => m.to === '972500000002' && m.raw?.template?.name === 'manager_negative_alert'));
     check('Reason pick → manager alerted immediately', !!alert);
-    check('Alert carries customer name', !!alert && alert.summary.includes('יוסי כהן'));
+    check('Alert carries the customer\'s first name only',
+      !!alert && alert.summary.includes('יוסי') && !alert.summary.includes('כהן'));
     check('Alert carries the rating', !!alert && alert.summary.includes('2/5'),
       alert && alert.summary.slice(0, 120));
     check('Alert carries the reason', !!alert && alert.summary.includes('זמן המשלוח'));
@@ -584,6 +591,39 @@ async function main() {
       (await api('get', `/notifications?orgId=${org.id}`)).find((n) => n.wamid === accepted.wamid && n.status === 'failed'));
     check('A failed delivery status marks the notice failed, with Meta\'s reason',
       !!failedNotice && (failedNotice.errorDetail ?? '').includes('131047'), failedNotice?.errorDetail);
+
+    // ── Scenario N: customer names are kept as the first name only. Order
+    // screens print "רחלי ב." — first name plus the initial of the surname —
+    // and that used to be stored as typed, or welded into "רחליב" when read
+    // off a photo. ──
+    const { firstNameOnly } = require('../dist/ocr');
+    const nameCases = [
+      ['רחלי ב.', 'רחלי'], ['רחלי.ב', 'רחלי'], ['‏רחלי ב.', 'רחלי'], ['Dana R.', 'Dana'],
+      ['דנה כהן', 'דנה'], ['ג\'ואן כהן', 'ג\'ואן'], ['מרי-אן ל.', 'מרי-אן'], ['יוסי', 'יוסי'], ['...', null],
+    ];
+    const wrongNames = nameCases.filter(([input, want]) => firstNameOnly(input) !== want)
+      .map(([input]) => `${JSON.stringify(input)}→${JSON.stringify(firstNameOnly(input))}`);
+    check('firstNameOnly keeps the first name and drops any surname or initial',
+      wrongNames.length === 0, wrongNames.join(' '));
+
+    // Through the dashboard's manual form.
+    const nameViaAdmin = await api('post', '/feedbacks', {
+      orgId: org.id, customerPhone: '0500000081', customerName: 'רחלי ב.', delayMinutes: 60,
+    });
+    check('Dashboard: "רחלי ב." is stored as "רחלי"', nameViaAdmin.customerName === 'רחלי',
+      JSON.stringify(nameViaAdmin.customerName));
+
+    // Through the owner's WhatsApp flow, with the exact text from the report.
+    mock.sent.length = 0;
+    await ownerText('0500000083');
+    const nameAsk = await waitFor(async () =>
+      mock.sent.find((m) => m.to === OWNER && m.summary.includes('מה שם הלקוח')));
+    check('Owner flow asks for the customer\'s name', !!nameAsk);
+    await ownerText('רחלי ב.');
+    const nameConfirm = await waitFor(async () =>
+      mock.sent.find((m) => m.to === OWNER && m.summary.includes('נקלט')));
+    check('Owner flow: typed "רחלי ב." is confirmed as "רחלי", not "רחליב"',
+      !!nameConfirm && nameConfirm.summary.includes('נקלט: רחלי ('), nameConfirm?.summary?.slice(0, 60));
 
     // ── Stats ──
     const stats = await api('get', '/stats');

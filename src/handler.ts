@@ -16,6 +16,7 @@ import {
 import { ManagerNotice, notifyManagers } from './notify';
 import {
   extractCustomerFromImage,
+  firstNameOnly,
   formatIsraeliPhone,
   isReachableOnWhatsApp,
   looksLikePhone,
@@ -116,8 +117,9 @@ export async function handleOwnerImage(
     return '⚠️ לא הצלחתי לזהות מספר טלפון בתמונה.\nשלח את המספר ישירות כהודעת טקסט (למשל: 0501234567)';
   }
 
-  // Caption wins over OCR-extracted name — the owner typed it on purpose
-  const customerName = caption?.trim() || extracted.name;
+  // Caption wins over OCR-extracted name — the owner typed it on purpose —
+  // though only its first name is kept, like every name we store.
+  const customerName = firstNameOnly(caption) ?? extracted.name;
 
   // A number read off a blurry photo gets one human glance before we message
   // it. Scheduling on a misread digit sends this restaurant's feedback request
@@ -219,7 +221,7 @@ export async function handleOwnerText(org: Org, ownerPhone: string, text: string
   }
 
   // waiting_for_name
-  const customerName = trimmed;
+  const customerName = firstNameOnly(trimmed) ?? trimmed;
   const { customerPhone, order } = pending;
   pendingOwnerStates.delete(ownerPhone);
   return scheduleAndConfirm(org, customerPhone, customerName, order);

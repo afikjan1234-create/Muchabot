@@ -63,6 +63,31 @@ export function looksLikePhone(text: string): string | null {
   return normalizeIsraeliPhone(digits);
 }
 
+// ─── Customer names ────────────────────────────────────────────────────────
+
+/**
+ * Reduces whatever name text we were handed to the customer's first name.
+ *
+ * Order screens print "רחלי ב." — a first name plus one letter of the
+ * surname — and the vision model, or an owner typing in a hurry, can hand
+ * that back as "רחלי ב." or even welded together as "רחליב". Only the first
+ * name is wanted anywhere (manager alerts, reports, the owner's
+ * confirmation); a surname or its initial is noise at best and, joined on,
+ * makes the name unreadable.
+ *
+ * Bidi marks are dropped first: text copied off a screen routinely carries an
+ * invisible RLM/LRM, which would otherwise survive as the "first character".
+ * Dots split like spaces so "רחלי.ב" and "רחלי ב." read the same, while an
+ * apostrophe or hyphen inside a name ("ג'ואן", "מרי-אן") stays part of it.
+ */
+export function firstNameOnly(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  const cleaned = raw.replace(/[‎‏‪-‮⁦-⁩]/g, '');
+  const first = cleaned.split(/[\s.]+/).find(Boolean) ?? '';
+  const name = first.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, '');
+  return name || null;
+}
+
 // ─── Tesseract local OCR (phone only — eng traineddata can't read Hebrew) ──
 
 // Ordered strongest-signal-first: a match on a full mobile pattern is worth
@@ -141,7 +166,7 @@ light — blurry, glared, or low resolution. Read it as carefully as you can.
 
 Extract these details:
 1. phone  — the CUSTOMER's phone number
-2. name   — the CUSTOMER's name (usually written in Hebrew)
+2. name   — the CUSTOMER's FIRST NAME ONLY (usually written in Hebrew)
 3. order  — the order/reference number shown on the screen, digits only
 4. amount — the order total, as shown, including its currency symbol
 
@@ -157,6 +182,10 @@ Rules:
   returning null and being asked again.
 - The name is the customer's, not the restaurant's, the courier's, or the
   delivery app's.
+- Return the first name alone. These screens usually print the first name
+  followed by a single initial of the surname, such as "רחלי ב." or "Dana R."
+  — return "רחלי" or "Dana". Never include the initial or a surname, and never
+  join the two together into one word ("רחליב" is wrong).
 - The order number is the order's own identifier, not the table number, not
   the courier id, and not part of the address.
 - The amount is the total charged, not a line item and not a delivery fee.
@@ -195,7 +224,9 @@ function parseGeminiReading(raw: string): GeminiReading | null {
       // A landline (or a mangled number) is not something we can message —
       // treat it as "not found" so the owner is asked instead.
       phone: phone && isReachableOnWhatsApp(phone) ? phone : null,
-      name: text(parsed.name),
+      // The prompt asks for the first name alone, but the model is not the
+      // only line of defence — see firstNameOnly.
+      name: firstNameOnly(text(parsed.name)),
       orderNumber: text(parsed.order),
       orderAmount: text(parsed.amount),
       confident: parsed.confident === true,

@@ -13,7 +13,7 @@ import {
   listOutbound,
   updateOrg,
 } from './db';
-import { formatIsraeliPhone, looksLikePhone } from './ocr';
+import { firstNameOnly, formatIsraeliPhone, looksLikePhone } from './ocr';
 import { FeedbackStatus, Org, OrgManager, OrgPhone, OrgPlan } from './types';
 import { businessDayFor, localNow, sendReport } from './report-scheduler';
 import { ReportPeriod } from './report';
@@ -318,7 +318,12 @@ adminRouter.post(
         ? parseInt(b.delayMinutes)
         : org.feedbackDelayMinutes;
     const scheduledAt = new Date(Date.now() + delayMinutes * 60_000);
-    const feedback = await createFeedback(org.id, phone, String(b.customerName ?? ''), scheduledAt);
+    const feedback = await createFeedback(
+      org.id,
+      phone,
+      firstNameOnly(String(b.customerName ?? '')) ?? '',
+      scheduledAt
+    );
     res.json(feedback);
   })
 );
